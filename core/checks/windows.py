@@ -87,6 +87,57 @@ def _check_pending_updates() -> int | None:
         return None
 
 
+def _check_failed_updates() -> int | None:
+    """Count Windows Update install failures in the last 30 days."""
+    ps = (
+        "$s = New-Object -ComObject Microsoft.Update.Session;"
+        " $h = $s.QueryHistory(0, 50);"
+        " $cutoff = (Get-Date).AddDays(-30);"
+        " ($h | Where-Object { $_.ResultCode -ne 2 -and $_.Date -gt $cutoff }).Count"
+    )
+    rc, out, _ = _powershell(ps, timeout=15)
+    if rc != 0:
+        return None
+    try:
+        return int(out.strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def _check_install_conflicts() -> dict[str, Any]:
+    """Detect installer conflicts: pending MSI lock, hung Windows Installer service.
+
+    Returns: {
+       'msi_inprogress': bool,   # HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\InProgress
+       'rename_pending': bool,   # PendingFileRenameOperations registry key
+       'wuauserv_status': str,   # service state for Windows Update
+    }
+    """
+    ps = (
+        "$msi = Test-Path 'HKLM:Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\InProgress';"
+        " $rename = $false;"
+        " try {"
+        "  $val = Get-ItemProperty 'HKLM:SYSTEM\\CurrentControlSet\\Control\\Session Manager'"
+        "         -Name PendingFileRenameOperations -ErrorAction Stop;"
+        "  if ($val.PendingFileRenameOperations) { $rename = $true }"
+        " } catch { }"
+        " $svc = (Get-Service wuauserv -ErrorAction SilentlyContinue).Status;"
+        " '{0}|{1}|{2}' -f $msi, $rename, $svc"
+    )
+    rc, out, _ = _powershell(ps, timeout=10)
+    if rc != 0 or not out or "|" not in out:
+        return {"msi_inprogress": False, "rename_pending": False, "wuauserv_status": ""}
+    try:
+        msi, rename, svc = out.split("|", 2)
+        return {
+            "msi_inprogress": msi.strip().lower() == "true",
+            "rename_pending": rename.strip().lower() == "true",
+            "wuauserv_status": svc.strip(),
+        }
+    except ValueError:
+        return {"msi_inprogress": False, "rename_pending": False, "wuauserv_status": ""}
+
+
 def _check_firewall() -> dict[str, bool] | None:
     ps = (
         "(Get-NetFirewallProfile -ErrorAction SilentlyContinue) |"
@@ -129,6 +180,8 @@ class WindowsCheck(Check):
         pending_reboot = _check_pending_reboot()
         pending_updates = _check_pending_updates()
         firewall = _check_firewall()
+        failed_updates = _check_failed_updates()
+        conflicts = _check_install_conflicts()
 
         score = 100
         recs: list[Recommendation] = []
@@ -199,6 +252,51 @@ class WindowsCheck(Check):
                 action_args={"delay_sec": 60},
             ))
 
+        # ── Update install failures (last 30 days) ──────────────────────────
+        if failed_updates and failed_updates > 0:
+            score -= min(20, failed_updates * 5)
+            problems.append(f"업데이트 설치 실패 {failed_updates}건")
+            recs.append(Recommendation(
+                text=(
+                    f"최근 30일간 업데이트 설치에 {failed_updates}건 실패했습니다. "
+                    "Windows Update 진단을 시도하세요."
+                ),
+                action="open_windows_update",
+                action_label="Windows Update 열기",
+            ))
+
+        # ── Installer / file rename conflicts ──────────────────────────────
+        if conflicts.get("msi_inprogress"):
+            score -= 15
+            problems.append("MSI 설치 진행 중/잠김")
+            recs.append(Recommendation(
+                text=(
+                    "다른 Windows Installer 작업이 진행 중이거나 비정상 종료된 흔적이 있습니다. "
+                    "재부팅 후 다시 시도해 주세요."
+                ),
+                action="restart_pc",
+                action_label="지금 재시작",
+                confirm="60초 후 PC를 재시작합니다. 진행할까요?",
+                action_args={"delay_sec": 60},
+            ))
+        if conflicts.get("rename_pending"):
+            score -= 10
+            problems.append("파일 교체 대기")
+            recs.append(Recommendation(
+                text=(
+                    "파일 교체가 다음 부팅에 예약되어 있습니다 (PendingFileRenameOperations). "
+                    "프로그램 설치/제거가 마무리되지 않은 상태일 수 있습니다."
+                ),
+                action="restart_pc",
+                action_label="지금 재시작",
+                confirm="60초 후 PC를 재시작합니다. 진행할까요?",
+                action_args={"delay_sec": 60},
+            ))
+        wu_status = (conflicts.get("wuauserv_status") or "").lower()
+        if wu_status and wu_status not in ("running", "stoppending", "startpending", ""):
+            score -= 5
+            problems.append(f"Windows Update 서비스 {wu_status}")
+
         # ── Firewall ────────────────────────────────────────────────────────
         if firewall is not None:
             disabled = [name for name, enabled in firewall.items() if not enabled]
@@ -241,6 +339,8 @@ class WindowsCheck(Check):
                 "defender": defender,
                 "pending_reboot": pending_reboot,
                 "pending_updates": pending_updates,
+                "failed_updates": failed_updates,
+                "conflicts": conflicts,
                 "firewall": firewall,
             },
             recommendations=recs,

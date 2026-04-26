@@ -1,9 +1,37 @@
-"""Top resource-consuming processes."""
+"""Top resource-consuming processes (excluding kernel/idle)."""
 from __future__ import annotations
 
 import psutil
 
 from .base import Check, CheckResult, Recommendation, Severity, linear_score, severity_from_score
+
+
+# Processes that report inflated CPU% but represent the system being idle
+# or kernel work — they should not count as "heavy" processes.
+_IGNORE_NAMES = {
+    # Windows
+    "system idle process",
+    "idle",
+    "system",
+    "registry",
+    "memory compression",
+    "secure system",
+    # macOS
+    "kernel_task",
+    # Linux: kthreads have empty/bracketed names — filtered separately
+}
+_IGNORE_PIDS = {0}  # Windows System Idle = 0; Linux pid 0 doesn't appear
+
+
+def _is_kernel_or_idle(name: str, pid: int) -> bool:
+    if pid in _IGNORE_PIDS:
+        return True
+    n = (name or "").strip().lower()
+    if not n or n in _IGNORE_NAMES:
+        return True
+    # Linux kernel threads usually surface with bracketed names ([kworker/...]),
+    # but psutil strips the brackets — fall back to status check.
+    return False
 
 
 class ProcessCheck(Check):
@@ -14,8 +42,8 @@ class ProcessCheck(Check):
     icon = "⚙"
 
     def run(self) -> CheckResult:
-        procs = []
-        zombies = 0
+        cpu_count = psutil.cpu_count(logical=True) or 1
+
         # Prime cpu_percent so it doesn't return 0 for everyone
         for p in psutil.process_iter(["pid", "name", "status"]):
             try:
@@ -26,18 +54,35 @@ class ProcessCheck(Check):
         # Brief settle to get meaningful CPU reading
         psutil.cpu_percent(interval=0.3)
 
+        procs: list[dict] = []
+        zombies = 0
         for p in psutil.process_iter(["pid", "name", "username", "status"]):
             try:
+                pid = p.info["pid"]
+                name = p.info.get("name") or "?"
+                # Linux kernel threads commonly have ppid=2 — filter those too
+                if pid != 0:
+                    try:
+                        if p.ppid() == 2 and not psutil.WINDOWS:
+                            continue
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                if _is_kernel_or_idle(name, pid):
+                    continue
+
                 cpu = p.cpu_percent(None)
                 mem = p.memory_percent()
                 status = p.info.get("status")
                 if status == psutil.STATUS_ZOMBIE:
                     zombies += 1
+                # Normalize CPU% so 100% means "one full core" — comparable across machines
+                cpu_per_core = cpu / cpu_count
                 procs.append({
-                    "pid": p.info["pid"],
-                    "name": p.info.get("name") or "?",
+                    "pid": pid,
+                    "name": name,
                     "user": p.info.get("username") or "",
                     "cpu": cpu,
+                    "cpu_per_core": cpu_per_core,
                     "memory": mem,
                 })
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -46,10 +91,12 @@ class ProcessCheck(Check):
         top_cpu = sorted(procs, key=lambda x: x["cpu"], reverse=True)[:5]
         top_mem = sorted(procs, key=lambda x: x["memory"], reverse=True)[:5]
 
-        # Score based on the heaviest single process (CPU + memory)
         heaviest_cpu = top_cpu[0]["cpu"] if top_cpu else 0
+        heaviest_cpu_pc = top_cpu[0]["cpu_per_core"] if top_cpu else 0
         heaviest_mem = top_mem[0]["memory"] if top_mem else 0
-        cpu_score = linear_score(heaviest_cpu, healthy_at=40.0, critical_at=200.0)
+
+        # Score against system-relative load (per-core), not absolute multi-core %.
+        cpu_score = linear_score(heaviest_cpu_pc, healthy_at=40.0, critical_at=95.0)
         mem_score = linear_score(heaviest_mem, healthy_at=20.0, critical_at=70.0)
         score = int(round((cpu_score + mem_score) / 2))
         if zombies > 5:
@@ -57,17 +104,28 @@ class ProcessCheck(Check):
         severity = severity_from_score(score)
 
         recs: list[Recommendation] = []
-        if heaviest_cpu >= 100:
+        if heaviest_cpu_pc >= 80 and top_cpu:
+            top = top_cpu[0]
             recs.append(Recommendation(
-                text=f"`{top_cpu[0]['name']}` 프로세스가 CPU를 많이 사용합니다.",
+                text=f"`{top['name']}` (PID {top['pid']}) 프로세스가 CPU를 많이 사용합니다.",
+                action="kill_process",
+                action_label=f"`{top['name']}` 종료",
+                confirm=f"`{top['name']}` (PID {top['pid']}) 프로세스를 강제 종료합니다. 진행할까요?\n저장하지 않은 작업은 사라질 수 있습니다.",
+                action_args={"pid": top["pid"], "name": top["name"]},
+            ))
+            recs.append(Recommendation(
+                text="작업 관리자에서 다른 프로세스도 함께 확인하세요.",
                 action="open_task_manager",
                 action_label="작업 관리자 열기",
             ))
-        if heaviest_mem >= 30:
+        if heaviest_mem >= 30 and top_mem:
+            top = top_mem[0]
             recs.append(Recommendation(
-                text=f"`{top_mem[0]['name']}` 프로세스가 메모리를 많이 사용합니다.",
-                action="open_task_manager",
-                action_label="작업 관리자 열기",
+                text=f"`{top['name']}` (PID {top['pid']}) 프로세스가 메모리를 많이 사용합니다.",
+                action="kill_process",
+                action_label=f"`{top['name']}` 종료",
+                confirm=f"`{top['name']}` (PID {top['pid']}) 프로세스를 강제 종료합니다. 진행할까요?\n저장하지 않은 작업은 사라질 수 있습니다.",
+                action_args={"pid": top["pid"], "name": top["name"]},
             ))
         if zombies > 5:
             recs.append(Recommendation(
@@ -79,9 +137,13 @@ class ProcessCheck(Check):
             ))
 
         if top_cpu:
-            summary = f"총 {len(procs)}개 · 최상위 {top_cpu[0]['name']} ({top_cpu[0]['cpu']:.0f}% CPU)"
+            top = top_cpu[0]
+            summary = (
+                f"총 {len(procs)}개 · 최상위 {top['name']} "
+                f"(코어당 {top['cpu_per_core']:.0f}%)"
+            )
         else:
-            summary = f"총 {len(procs)}개 프로세스"
+            summary = "사용자 프로세스를 찾지 못했습니다."
             severity = Severity.UNKNOWN
 
         return CheckResult(
@@ -95,6 +157,7 @@ class ProcessCheck(Check):
                 "zombies": zombies,
                 "top_cpu": top_cpu,
                 "top_memory": top_mem,
+                "logical_cores": cpu_count,
             },
             recommendations=recs,
             icon=self.icon,
