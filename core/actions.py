@@ -111,6 +111,16 @@ def _open_path(path: str | Path) -> ActionResult:
 
 # ── General actions ──────────────────────────────────────────────────────────
 
+@register("open_url")
+def _action_open_url(args: dict) -> ActionResult:
+    url = str(args.get("url") or "").strip()
+    if not url:
+        return ActionResult("error", "URL이 지정되지 않았습니다.")
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return ActionResult("error", "허용되지 않은 URL 형식입니다.")
+    return _open_url(url)
+
+
 @register("open_task_manager")
 def _open_task_manager(_: dict) -> ActionResult:
     if IS_WINDOWS:
@@ -132,6 +142,44 @@ def _open_resource_monitor(_: dict) -> ActionResult:
     if IS_WINDOWS:
         return _spawn(["resmon"])
     return _open_task_manager({})
+
+
+@register("kill_process")
+def _kill_process(args: dict) -> ActionResult:
+    """Terminate a specific process by PID, verifying name to avoid PID reuse."""
+    import psutil  # local import keeps actions importable on systems without it
+
+    try:
+        pid = int(args.get("pid", 0))
+    except (TypeError, ValueError):
+        pid = 0
+    expected_name = (args.get("name") or "").strip()
+    if pid <= 0:
+        return ActionResult("error", "PID가 지정되지 않았습니다.")
+
+    try:
+        p = psutil.Process(pid)
+        actual = p.name() or ""
+        if expected_name and actual.lower() != expected_name.lower():
+            return ActionResult(
+                "error",
+                f"PID {pid}의 프로세스 이름이 다릅니다 (기대: {expected_name}, 실제: {actual}). "
+                "안전을 위해 종료를 취소했습니다.",
+            )
+        p.terminate()
+        try:
+            p.wait(timeout=3)
+        except psutil.TimeoutExpired:
+            p.kill()
+            p.wait(timeout=2)
+        return ActionResult("ok", f"`{actual}` (PID {pid}) 프로세스를 종료했습니다.")
+    except psutil.NoSuchProcess:
+        return ActionResult("ok", "이미 종료된 프로세스입니다.")
+    except psutil.AccessDenied:
+        return ActionResult(
+            "error",
+            "권한이 부족합니다. PC Doctor를 관리자(우클릭 → 관리자 권한으로 실행)로 실행해 주세요.",
+        )
 
 
 @register("restart_pc")

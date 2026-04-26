@@ -1,14 +1,106 @@
-"""CPU/GPU temperature check (best-effort, OS dependent)."""
+"""CPU/GPU temperature & thermal-throttling check.
+
+Sources, in order of preference:
+  - psutil.sensors_temperatures() — Linux/some macOS systems
+  - LibreHardwareMonitor / OpenHardwareMonitor WMI namespace (Windows, opt-in)
+  - MSAcpi_ThermalZoneTemperature (Windows fallback — motherboard ACPI)
+"""
 from __future__ import annotations
+
+import subprocess
+from typing import Any
 
 import psutil
 
-from .base import Check, CheckResult, Severity, linear_score, severity_from_score
+from utils.platform import IS_WINDOWS
+
+from .base import Check, CheckResult, Recommendation, Severity, linear_score, severity_from_score
+
+
+def _capture(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, check=False,
+        )
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return -1, "", "command failed"
+
+
+def _windows_acpi_temps() -> list[dict[str, Any]]:
+    """Read CPU temperature via ACPI thermal zones (units: tenths of Kelvin)."""
+    ps = (
+        "Get-CimInstance -Namespace 'root/wmi' -ClassName MSAcpi_ThermalZoneTemperature"
+        " -ErrorAction SilentlyContinue |"
+        " Select-Object InstanceName, CurrentTemperature |"
+        " ConvertTo-Csv -NoTypeInformation"
+    )
+    rc, out, _ = _capture(["powershell", "-NoProfile", "-Command", ps], timeout=10)
+    sensors: list[dict[str, Any]] = []
+    if rc != 0 or not out:
+        return sensors
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return sensors
+    for line in lines[1:]:
+        parts = [p.strip().strip('"') for p in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            raw = int(parts[1])
+        except ValueError:
+            continue
+        celsius = (raw / 10.0) - 273.15
+        if celsius < -50 or celsius > 200:  # garbage filter
+            continue
+        sensors.append({
+            "label": parts[0] or "ACPI Thermal Zone",
+            "current": round(celsius, 1),
+            "high": None,
+            "critical": None,
+        })
+    return sensors
+
+
+def _windows_lhm_temps() -> list[dict[str, Any]]:
+    """Read temps from LibreHardwareMonitor / OpenHardwareMonitor if running."""
+    sensors: list[dict[str, Any]] = []
+    for ns in ("root/LibreHardwareMonitor", "root/OpenHardwareMonitor"):
+        ps = (
+            f"Get-CimInstance -Namespace '{ns}' -ClassName Sensor"
+            " -ErrorAction SilentlyContinue |"
+            " Where-Object SensorType -eq 'Temperature' |"
+            " Select-Object Name, Value |"
+            " ConvertTo-Csv -NoTypeInformation"
+        )
+        rc, out, _ = _capture(["powershell", "-NoProfile", "-Command", ps], timeout=8)
+        if rc != 0 or not out:
+            continue
+        lines = [ln for ln in out.splitlines() if ln.strip()]
+        if len(lines) < 2:
+            continue
+        for line in lines[1:]:
+            parts = [p.strip().strip('"') for p in line.split(",")]
+            if len(parts) < 2:
+                continue
+            try:
+                value = float(parts[1])
+            except ValueError:
+                continue
+            sensors.append({
+                "label": parts[0] or "LHM",
+                "current": round(value, 1),
+                "high": None,
+                "critical": None,
+            })
+        if sensors:
+            break
+    return sensors
 
 
 class TemperatureCheck(Check):
     key = "temperature"
-    title = "온도"
+    title = "온도/발열"
     weight = 0.05
     quick = False
     icon = "🌡"
@@ -30,14 +122,34 @@ class TemperatureCheck(Check):
         except (AttributeError, NotImplementedError, OSError):
             temps = {}
 
+        if IS_WINDOWS and not temps:
+            lhm = _windows_lhm_temps()
+            if lhm:
+                temps["LibreHardwareMonitor"] = lhm
+            acpi = _windows_acpi_temps()
+            if acpi:
+                temps["ACPI"] = acpi
+
         readings = [
             entry["current"]
             for entries in temps.values()
             for entry in entries
-            if entry["current"] is not None
+            if entry.get("current") is not None
         ]
 
         if not readings:
+            recs: list[Recommendation] = []
+            if IS_WINDOWS:
+                recs.append(Recommendation(
+                    text=(
+                        "Windows는 표준 CPU 온도 API가 없습니다. "
+                        "정확한 측정을 원하면 LibreHardwareMonitor를 실행하세요 — "
+                        "PC Doctor가 자동으로 센서를 읽어옵니다."
+                    ),
+                    action="open_url",
+                    action_label="LibreHardwareMonitor 받기",
+                    action_args={"url": "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases"},
+                ))
             return CheckResult(
                 key=self.key,
                 title=self.title,
@@ -45,6 +157,7 @@ class TemperatureCheck(Check):
                 severity=Severity.UNKNOWN,
                 summary="센서 정보 없음",
                 metrics={"sensors": temps},
+                recommendations=recs,
                 icon=self.icon,
             )
 
@@ -52,11 +165,19 @@ class TemperatureCheck(Check):
         score = linear_score(peak, healthy_at=65.0, critical_at=95.0)
         severity = severity_from_score(score)
 
-        recs: list[str] = []
+        recs = []
         if peak >= 90:
-            recs.append("온도가 매우 높습니다. 환기/먼지 제거를 점검해 주세요.")
+            recs.append(Recommendation(
+                text=f"발열이 매우 높습니다 ({peak:.0f}℃). 무거운 작업을 멈추고 환기/먼지 제거를 점검하세요.",
+                action="open_task_manager",
+                action_label="작업 관리자 열기",
+            ))
         elif peak >= 80:
-            recs.append("온도가 높습니다. 무거운 작업을 잠시 멈춰 주세요.")
+            recs.append(Recommendation(
+                text=f"온도가 높습니다 ({peak:.0f}℃). 백그라운드 부하를 확인해 주세요.",
+                action="open_task_manager",
+                action_label="작업 관리자 열기",
+            ))
 
         return CheckResult(
             key=self.key,
