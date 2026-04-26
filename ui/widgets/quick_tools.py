@@ -42,6 +42,10 @@ _TOOLS = [
     ("🔧", "드라이브 최적화",
      "open_optimize_drives", {},
      None),
+    ("🛡", "관리자 권한으로 재시작",
+     "restart_as_admin", {},
+     "PC Doctor를 관리자 권한으로 다시 시작합니다.\n"
+     "(C:\\Windows\\Temp 같은 보호된 폴더 정리에 필요) 진행할까요?"),
 ]
 
 

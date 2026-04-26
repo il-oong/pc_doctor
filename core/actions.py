@@ -251,10 +251,15 @@ def _clear_temp_files(args: dict) -> ActionResult:
     if not temp_dir.exists():
         return ActionResult("skipped", "임시 폴더를 찾지 못했습니다.")
 
+    try:
+        entries = list(temp_dir.iterdir())
+    except (PermissionError, OSError) as exc:
+        return ActionResult("error", f"임시 폴더 접근 거부: {exc}")
+
     removed = 0
     freed = 0
     skipped = 0
-    for entry in temp_dir.iterdir():
+    for entry in entries:
         try:
             stat = entry.stat()
             if stat.st_mtime > cutoff:
@@ -265,7 +270,6 @@ def _clear_temp_files(args: dict) -> ActionResult:
                 removed += 1
                 freed += size
             elif entry.is_dir():
-                # Best-effort: rmtree, ignore errors
                 size = sum(p.stat().st_size for p in entry.rglob("*") if p.is_file())
                 shutil.rmtree(entry, ignore_errors=True)
                 removed += 1
@@ -361,7 +365,7 @@ def _clear_browser_cache(_: dict) -> ActionResult:
 
 @register("clear_windows_temp")
 def _clear_windows_temp(args: dict) -> ActionResult:
-    """Aggressive temp cleanup: %TEMP%, %WINDIR%\\Temp, prefetch (Win only)."""
+    """Cleanup: %TEMP% always, %WINDIR%\\Temp if accessible (admin)."""
     older_than_days = int(args.get("older_than_days", 1))
     cutoff = time.time() - older_than_days * 86400
 
@@ -373,10 +377,19 @@ def _clear_windows_temp(args: dict) -> ActionResult:
     removed = 0
     freed = 0
     skipped = 0
+    locked_dirs: list[str] = []
+
     for tdir in temps:
         if not tdir.exists():
             continue
-        for entry in tdir.iterdir():
+        try:
+            entries = list(tdir.iterdir())
+        except (PermissionError, OSError):
+            # 일반 권한으로는 listing 자체가 불가 — 관리자 권한 필요
+            locked_dirs.append(str(tdir))
+            continue
+
+        for entry in entries:
             try:
                 stat = entry.stat()
                 if stat.st_mtime > cutoff:
@@ -399,7 +412,51 @@ def _clear_windows_temp(args: dict) -> ActionResult:
     msg = f"임시 파일 {removed}개 정리 · 약 {mb:.1f} MB 확보"
     if skipped:
         msg += f" · 사용 중 {skipped}개 건너뜀"
+    if locked_dirs:
+        msg += (
+            f"\n\n관리자 권한이 필요한 폴더 {len(locked_dirs)}개를 건너뛰었습니다: "
+            f"{', '.join(locked_dirs)}\n"
+            "전체 정리를 원하면 '관리자 권한으로 재시작' 후 다시 실행하세요."
+        )
     return ActionResult("ok", msg)
+
+
+@register("restart_as_admin")
+def _restart_as_admin(_: dict) -> ActionResult:
+    """Relaunch the current PC Doctor process with UAC elevation (Windows)."""
+    if not IS_WINDOWS:
+        return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
+    try:
+        import ctypes
+        # 현재 실행 중인 .py 또는 main.py 경로
+        script = sys.argv[0] if sys.argv and sys.argv[0] else ""
+        if not script or not Path(script).exists():
+            # fallback: project root main.py
+            script = str(Path(__file__).resolve().parent.parent / "main.py")
+
+        # Quote args properly
+        params = " ".join(f'"{a}"' for a in sys.argv[1:])
+        full_params = f'"{script}" {params}'.strip()
+
+        # ShellExecuteW with "runas" verb triggers UAC
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, full_params, None, 1,
+        )
+        # 32 이하면 실패 (대표값: 0=메모리부족, 5=거부)
+        if ret <= 32:
+            if ret == 5:
+                return ActionResult("error", "UAC 승인이 거부되었습니다.")
+            return ActionResult("error", f"재시작 실패 (code {ret})")
+
+        # 성공 — 잠시 후 현재 프로세스 종료
+        def _exit_soon() -> None:
+            time.sleep(0.5)
+            os._exit(0)
+        import threading
+        threading.Thread(target=_exit_soon, daemon=True).start()
+        return ActionResult("ok", "관리자 권한으로 재시작하는 중… 현재 창은 곧 닫힙니다.")
+    except Exception as exc:  # noqa: BLE001
+        return ActionResult("error", f"재시작 실패: {exc}")
 
 
 @register("find_old_apps")
