@@ -77,7 +77,9 @@ def _run_and_capture(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
     proc = subprocess.run(
         cmd, capture_output=True, text=True, timeout=timeout, check=False,
     )
-    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    return proc.returncode, out, err
 
 
 def _open_url(url: str) -> ActionResult:
@@ -452,9 +454,19 @@ def _open_smart_report(args: dict) -> ActionResult:
             rc, out, err = _run_and_capture(["smartctl", "-H", str(device)], timeout=15)
             return ActionResult("ok", out or "smartctl 출력 없음") if rc in (0, 4) else ActionResult("error", err or "smartctl 실패")
         return ActionResult("skipped", "smartctl이 설치되어 있지 않습니다.")
-    # Windows: surface wmic diskdrive status text
+    # Windows: surface PowerShell physical-disk health
+    ps = (
+        "Get-PhysicalDisk -ErrorAction SilentlyContinue |"
+        " Format-Table -AutoSize FriendlyName, HealthStatus, OperationalStatus, MediaType, Size"
+    )
+    rc, out, err = _run_and_capture(["powershell", "-NoProfile", "-Command", ps], timeout=15)
+    if rc == 0 and out:
+        return ActionResult("ok", out)
+    # Fallback for very old Windows
     rc, out, err = _run_and_capture(
-        ["wmic", "diskdrive", "get", "Model,Status,Size"], timeout=15,
+        ["powershell", "-NoProfile", "-Command",
+         "Get-CimInstance Win32_DiskDrive | Format-Table -AutoSize Model, Status, Size, MediaType"],
+        timeout=15,
     )
     if rc == 0 and out:
         return ActionResult("ok", out)

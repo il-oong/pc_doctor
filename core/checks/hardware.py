@@ -1,15 +1,17 @@
 """Hard drive health check — SMART status & physical disk diagnostics.
 
-This check goes beyond `disk.py` (which looks at free space). It inspects the
-physical drive's predictive failure status using whatever facility the OS
-makes available: Windows WMI (`wmic diskdrive`), or `smartctl` on
-macOS/Linux when installed.
+Sources:
+  - Windows: PowerShell `Get-PhysicalDisk` (HealthStatus / OperationalStatus)
+             plus a fallback to `Get-CimInstance Win32_DiskDrive` for older
+             builds. Both are read as JSON to handle null / odd values.
+  - macOS/Linux: `smartctl -H <device>` if `smartmontools` is installed.
 
-If no health source is available, the result is reported as UNKNOWN with a
-helpful recommendation for installing `smartmontools`.
+Each path returns a list of drive dicts; missing data → UNKNOWN result with
+guidance.
 """
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from typing import Any
@@ -27,40 +29,96 @@ def _capture(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, check=False,
         )
-        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
+        return proc.returncode, out, err
     except (FileNotFoundError, subprocess.SubprocessError, OSError):
         return -1, "", "command failed"
 
 
-def _windows_disk_status() -> list[dict[str, Any]]:
-    """Use WMIC to fetch per-physical-disk SMART predictive status."""
+def _safe_str(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _powershell_json(script: str, timeout: int = 15) -> Any:
     rc, out, _ = _capture(
-        ["wmic", "diskdrive", "get", "Model,Status,Size,MediaType", "/format:csv"],
-        timeout=15,
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        timeout=timeout,
     )
-    drives: list[dict[str, Any]] = []
     if rc != 0 or not out:
+        return None
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return None
+
+
+def _windows_disk_status() -> list[dict[str, Any]]:
+    """Read physical disk health from Windows.
+
+    Tries Get-PhysicalDisk first (Win8+ / preferred), falls back to
+    Get-CimInstance Win32_DiskDrive for compatibility.
+    """
+    drives: list[dict[str, Any]] = []
+
+    # Preferred: Get-PhysicalDisk
+    data = _powershell_json(
+        "Get-PhysicalDisk -ErrorAction SilentlyContinue |"
+        " Select-Object FriendlyName, HealthStatus, OperationalStatus, MediaType, Size, BusType |"
+        " ConvertTo-Json -Compress"
+    )
+    if data is not None:
+        if isinstance(data, dict):
+            data = [data]
+        if isinstance(data, list):
+            for row in data:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    size = int(row.get("Size") or 0)
+                except (TypeError, ValueError):
+                    size = 0
+                drives.append({
+                    "model": _safe_str(row.get("FriendlyName")) or "Unknown",
+                    "status": _safe_str(row.get("HealthStatus")) or "Unknown",
+                    "operational": _safe_str(row.get("OperationalStatus")),
+                    "media": _safe_str(row.get("MediaType")),
+                    "bus": _safe_str(row.get("BusType")),
+                    "size": size,
+                    "size_human": bytes_human(size) if size else "",
+                })
+    if drives:
         return drives
-    lines = [ln for ln in out.splitlines() if ln.strip()]
-    if len(lines) < 2:
+
+    # Fallback: Win32_DiskDrive
+    data = _powershell_json(
+        "Get-CimInstance Win32_DiskDrive |"
+        " Select-Object Model, Status, Size, MediaType |"
+        " ConvertTo-Json -Compress"
+    )
+    if data is None:
         return drives
-    header = [h.strip() for h in lines[0].split(",")]
-    for line in lines[1:]:
-        cells = [c.strip() for c in line.split(",")]
-        if len(cells) != len(header):
-            continue
-        row = dict(zip(header, cells))
-        try:
-            size = int(row.get("Size") or 0)
-        except ValueError:
-            size = 0
-        drives.append({
-            "model": row.get("Model") or "Unknown",
-            "status": row.get("Status") or "Unknown",
-            "media": row.get("MediaType") or "",
-            "size": size,
-            "size_human": bytes_human(size) if size else "",
-        })
+    if isinstance(data, dict):
+        data = [data]
+    if isinstance(data, list):
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            try:
+                size = int(row.get("Size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            drives.append({
+                "model": _safe_str(row.get("Model")) or "Unknown",
+                "status": _safe_str(row.get("Status")) or "Unknown",
+                "operational": "",
+                "media": _safe_str(row.get("MediaType")),
+                "bus": "",
+                "size": size,
+                "size_human": bytes_human(size) if size else "",
+            })
     return drives
 
 
@@ -113,8 +171,10 @@ class HardwareCheck(Check):
             else:
                 for d in drives:
                     status = (d.get("status") or "").lower()
-                    if status and status != "ok":
-                        unhealthy.append(f"{d['model']} ({status})")
+                    # Healthy markers across both PowerShell APIs
+                    if status in ("", "ok", "healthy"):
+                        continue
+                    unhealthy.append(f"{d['model']} ({status})")
 
         elif IS_LINUX or IS_MACOS:
             if shutil.which("smartctl"):

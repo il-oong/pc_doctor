@@ -19,7 +19,9 @@ def _powershell(script: str, timeout: int = 25) -> tuple[int, str, str]:
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True, text=True, timeout=timeout, check=False,
         )
-        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
+        return proc.returncode, out, err
     except (FileNotFoundError, subprocess.SubprocessError, OSError):
         return -1, "", "powershell unavailable"
 
