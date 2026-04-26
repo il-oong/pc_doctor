@@ -19,6 +19,7 @@ from ui.theme import (
     severity_color,
 )
 from ui.widgets.prescription import PrescriptionPanel
+from ui.widgets.quick_tools import QuickToolsPanel
 from ui.widgets.score_gauge import ScoreGauge
 from ui.widgets.vital_card import VitalCard
 
@@ -98,6 +99,17 @@ class DashboardView(ttk.Frame):
 
         self._grid = tk.Frame(p, bg=BG_CANVAS, padx=4, pady=4)
         self._grid.pack(fill="x", padx=16, pady=(0, 8))
+
+        # ── Quick tools (always visible) ───────────────────────────────────
+        section_lbl_qt = tk.Label(
+            p, text="빠른 도구",
+            font=(FONT_FAMILY, 13, "bold"),
+            bg=BG_CANVAS, fg=TEXT_SECONDARY, anchor="w",
+        )
+        section_lbl_qt.pack(fill="x", padx=20, pady=(8, 4))
+
+        self._quick_tools = QuickToolsPanel(p, on_action=self._on_action)
+        self._quick_tools.pack(fill="x", padx=16, pady=(0, 8))
 
         # ── Prescription ────────────────────────────────────────────────────
         section_lbl2 = tk.Label(
