@@ -16,6 +16,8 @@ python main.py
 | CPU 부하 | 사용률·코어별·로드 애버리지 |
 | 메모리 | RAM·스왑 사용량 |
 | 저장소 | 파티션별 여유 공간 |
+| 하드웨어 | 디스크 SMART/예측 실패 상태 (Win: WMI · *nix: smartctl) |
+| Windows 점검 | 보류 업데이트, Defender 상태/정의/검사, 방화벽, 재부팅 대기 |
 | 네트워크 | 인터넷 연결·DNS·RTT |
 | 배터리 | 잔량·충전 상태 |
 | 온도 | CPU 온도 센서 |
@@ -33,6 +35,8 @@ python main.py
 
 - 앱 시작 시 Quick Scan 자동 실행
 - 검진 결과를 처방전(Prescription) 형식으로 표시
+- **원클릭 조치**: 처방전의 `▶ 조치 실행` 버튼으로 추천 조치를 직접 수행
+  (작업 관리자/디스크 정리/임시파일 삭제/DNS 캐시 비우기/Defender 검사/Windows Update 등)
 - 주기 자동 검진 (기본 30분, 설정 가능)
 - 검진 이력 SQLite 저장 (`~/.pc_doctor/history.db`)
 - HTML 리포트 export (`~/.pc_doctor/reports/`)

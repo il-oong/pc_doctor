@@ -26,9 +26,10 @@ from ui.widgets.vital_card import VitalCard
 class DashboardView(ttk.Frame):
     """Scrollable dashboard: gauge → vital cards grid → prescription."""
 
-    def __init__(self, parent: tk.Widget, **kwargs: object) -> None:
+    def __init__(self, parent: tk.Widget, on_action=None, **kwargs: object) -> None:
         super().__init__(parent, style="TFrame", **kwargs)
         self._cards: dict[str, VitalCard] = {}
+        self._on_action = on_action
         self._build()
 
     def _build(self) -> None:
@@ -106,7 +107,7 @@ class DashboardView(ttk.Frame):
         )
         section_lbl2.pack(fill="x", padx=20, pady=(8, 4))
 
-        self._prescription = PrescriptionPanel(p)
+        self._prescription = PrescriptionPanel(p, on_action=self._on_action)
         self._prescription.pack(fill="x", padx=16, pady=(0, 16))
 
     # ── Public update methods ──────────────────────────────────────────────────────
