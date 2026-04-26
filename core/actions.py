@@ -493,11 +493,23 @@ def _open_recycle_bin(_: dict) -> ActionResult:
 @register("empty_recycle_bin")
 def _empty_recycle_bin(_: dict) -> ActionResult:
     if IS_WINDOWS:
-        ps = "Clear-RecycleBin -Force -ErrorAction SilentlyContinue"
-        rc, out, err = _run_and_capture(["powershell", "-NoProfile", "-Command", ps], timeout=60)
-        if rc == 0:
-            return ActionResult("ok", "휴지통을 비웠습니다.")
-        return ActionResult("error", err or "휴지통 비우기 실패")
+        # Windows API SHEmptyRecycleBinW — 일반 권한으로 동작, PowerShell
+        # 실행 정책의 영향을 받지 않음.
+        try:
+            import ctypes
+            SHERB_NOCONFIRMATION = 0x00000001
+            SHERB_NOPROGRESSUI   = 0x00000002
+            SHERB_NOSOUND        = 0x00000004
+            flags = SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND
+            hr = ctypes.windll.shell32.SHEmptyRecycleBinW(None, None, flags)
+            # S_OK == 0, E_UNEXPECTED 일부 빌드에서 비어있을 때 0x8000FFFF 반환 → 정상 처리
+            if hr == 0:
+                return ActionResult("ok", "휴지통을 비웠습니다.")
+            if hr == -2147418113 or hr == 0x8000FFFF:  # bin already empty
+                return ActionResult("ok", "휴지통이 이미 비어 있습니다.")
+            return ActionResult("error", f"휴지통 비우기 실패 (HRESULT 0x{hr & 0xFFFFFFFF:08X})")
+        except OSError as exc:
+            return ActionResult("error", f"휴지통 비우기 실패: {exc}")
     if IS_MACOS:
         rc, _, err = _run_and_capture(["osascript", "-e", 'tell application "Finder" to empty trash'])
         return ActionResult("ok", "휴지통을 비웠습니다.") if rc == 0 else ActionResult("error", err or "실패")
