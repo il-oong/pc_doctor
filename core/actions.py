@@ -704,13 +704,32 @@ def _check_for_updates(_: dict) -> ActionResult:
         if rc_fetch != 0:
             return ActionResult("error", f"fetch 실패: {err_fetch}")
 
+        # 진단 정보: 현재 commit + origin/main commit
+        _, head_info, _ = _run_and_capture(
+            ["git", "-C", str(project_root), "log", "-1",
+             "--pretty=format:%h %s (%cs)", "HEAD"], timeout=5,
+        )
+        _, remote_info, _ = _run_and_capture(
+            ["git", "-C", str(project_root), "log", "-1",
+             "--pretty=format:%h %s (%cs)", "origin/main"], timeout=5,
+        )
+        diag = (
+            f"\n\n📂 폴더: {project_root}"
+            f"\n📌 현재: {head_info or '?'}"
+            f"\n🌐 원격: {remote_info or '?'}"
+        )
+
         rc_log, log_out, _ = _run_and_capture(
             ["git", "-C", str(project_root), "log", "HEAD..origin/main", "--oneline"],
             timeout=10,
         )
         new_commits = [ln for ln in (log_out.splitlines() if log_out else []) if ln.strip()]
         if not new_commits:
-            return ActionResult("ok", "이미 최신 버전입니다.")
+            return ActionResult(
+                "ok",
+                "이미 최신 버전입니다." + diag +
+                "\n\n새 기능이 안 보이면 PC Doctor를 한 번 닫고 다시 실행해 주세요."
+            )
 
         rc_pull, pull_out, err_pull = _run_and_capture(
             ["git", "-C", str(project_root), "pull", "--ff-only", "origin", "main"],
@@ -720,7 +739,8 @@ def _check_for_updates(_: dict) -> ActionResult:
             return ActionResult(
                 "error",
                 f"업데이트 실패: {err_pull or pull_out}\n"
-                "로컬 변경 사항이 있을 수 있습니다 — cmd에서 확인해 주세요."
+                "로컬 변경 사항이 충돌했을 수 있습니다 — '강제 재설치'를 시도해 주세요."
+                + diag
             )
 
         summary = "\n".join(f"• {c}" for c in new_commits[:10])
@@ -728,10 +748,52 @@ def _check_for_updates(_: dict) -> ActionResult:
         return ActionResult(
             "ok",
             f"{len(new_commits)}건의 업데이트를 받았습니다:\n\n{summary}{more}\n\n"
-            "변경 사항은 PC Doctor를 재시작하면 적용됩니다."
+            "변경 사항은 PC Doctor를 재시작하면 적용됩니다." + diag
         )
     except Exception as exc:  # noqa: BLE001
         return ActionResult("error", f"업데이트 중 오류: {exc}")
+
+
+@register("force_reinstall")
+def _force_reinstall(_: dict) -> ActionResult:
+    """Aggressive update: fetch + reset --hard origin/main.
+
+    Discards any local modifications (the user explicitly asks for this).
+    Useful when the working tree got out of sync with HEAD or pulls keep
+    being rejected.
+    """
+    if not shutil.which("git"):
+        return ActionResult("error", "git이 설치되어 있지 않습니다.")
+
+    project_root = Path(__file__).resolve().parent.parent
+    if not (project_root / ".git").exists():
+        return ActionResult(
+            "skipped",
+            "이 폴더는 git 저장소가 아닙니다.\n"
+            "폴더를 지우고 git clone으로 다시 받으세요."
+        )
+
+    try:
+        rc, _, err = _run_and_capture(
+            ["git", "-C", str(project_root), "fetch", "origin"], timeout=30,
+        )
+        if rc != 0:
+            return ActionResult("error", f"fetch 실패: {err}")
+
+        rc, _, err = _run_and_capture(
+            ["git", "-C", str(project_root), "reset", "--hard", "origin/main"],
+            timeout=20,
+        )
+        if rc != 0:
+            return ActionResult("error", f"reset 실패: {err}")
+
+        return ActionResult(
+            "ok",
+            "강제 재설치 완료. 모든 로컬 변경 사항을 폐기하고 origin/main으로 맞췄습니다."
+        )
+    except Exception as exc:  # noqa: BLE001
+        return ActionResult("error", f"재설치 중 오류: {exc}")
+
 
 
 @register("restart_app")
