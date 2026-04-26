@@ -255,14 +255,38 @@ class App(tk.Tk):
             messagebox.showwarning("PC Doctor — 업데이트", result.message)
             self._footer_lbl.configure(text="업데이트 건너뜀", fg=theme.TEXT_MUTED)
             return
+
         if not result.ok:
-            messagebox.showerror("PC Doctor — 업데이트", result.message)
-            self._footer_lbl.configure(text="업데이트 실패", fg=theme.TEXT_MUTED)
+            # 실패 시 강제 재설치 제안
+            force = messagebox.askyesno(
+                "PC Doctor — 업데이트 실패",
+                f"{result.message}\n\n로컬 변경사항을 모두 폐기하고 강제로 다시 받을까요?\n"
+                "(origin/main으로 hard reset)",
+            )
+            if force:
+                self._force_reinstall_then_restart()
+            else:
+                self._footer_lbl.configure(text="업데이트 실패", fg=theme.TEXT_MUTED)
             return
 
-        if result.message.startswith("이미 최신"):
-            messagebox.showinfo("PC Doctor — 업데이트", result.message)
-            self._footer_lbl.configure(text="이미 최신 버전", fg=theme.TEXT_MUTED)
+        already_up_to_date = result.message.startswith("이미 최신")
+
+        if already_up_to_date:
+            # 풀했지만 재시작 안 한 케이스가 잦으므로 항상 재시작 옵션 제공
+            choice = messagebox.askyesnocancel(
+                "PC Doctor — 업데이트",
+                f"{result.message}\n\n"
+                "지금 재시작할까요?\n"
+                "  예 → 재시작 (코드 다시 로드)\n"
+                "  아니오 → 닫기\n"
+                "  취소 → 강제 재설치 (로컬 변경 폐기 후 받기)",
+            )
+            if choice is True:
+                actions.run("restart_app", {})
+            elif choice is None:  # 취소 = 강제 재설치
+                self._force_reinstall_then_restart()
+            else:
+                self._footer_lbl.configure(text="이미 최신 버전", fg=theme.TEXT_MUTED)
             return
 
         # 새 변경사항 있음 — 재시작 묻기
@@ -276,6 +300,19 @@ class App(tk.Tk):
         )
         if restart:
             actions.run("restart_app", {})
+
+    def _force_reinstall_then_restart(self) -> None:
+        self._footer_lbl.configure(text="강제 재설치 중…", fg=theme.ACCENT_PRIMARY)
+        self.update_idletasks()
+        result = actions.run("force_reinstall", {})
+        if result.ok:
+            messagebox.showinfo(
+                "PC Doctor — 강제 재설치", f"{result.message}\n\n재시작합니다.",
+            )
+            actions.run("restart_app", {})
+        else:
+            messagebox.showerror("PC Doctor — 강제 재설치", result.message)
+            self._footer_lbl.configure(text="강제 재설치 실패", fg=theme.TEXT_MUTED)
 
     def _run_action(
         self,
