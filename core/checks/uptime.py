@@ -7,7 +7,7 @@ import psutil
 
 from utils.format import duration
 
-from .base import Check, CheckResult, linear_score, severity_from_score
+from .base import Check, CheckResult, Recommendation, linear_score, severity_from_score
 
 
 class UptimeCheck(Check):
@@ -26,11 +26,23 @@ class UptimeCheck(Check):
         score = linear_score(days, healthy_at=14.0, critical_at=60.0)
         severity = severity_from_score(score)
 
-        recs: list[str] = []
+        recs: list[Recommendation] = []
         if days >= 30:
-            recs.append("가동 시간이 매우 깁니다. 보안/안정성을 위해 재시작을 권장합니다.")
+            recs.append(Recommendation(
+                text="가동 시간이 매우 깁니다. 보안/안정성을 위해 재시작을 권장합니다.",
+                action="restart_pc",
+                action_label="지금 재시작",
+                confirm="60초 후 PC를 재시작합니다. 진행할까요?",
+                action_args={"delay_sec": 60},
+            ))
         elif days >= 14:
-            recs.append("재시작한 지 오래됐습니다. 시간이 될 때 재부팅을 권장합니다.")
+            recs.append(Recommendation(
+                text="재시작한 지 오래됐습니다. 시간이 될 때 재부팅을 권장합니다.",
+                action="restart_pc",
+                action_label="지금 재시작",
+                confirm="60초 후 PC를 재시작합니다. 진행할까요?",
+                action_args={"delay_sec": 60},
+            ))
 
         return CheckResult(
             key=self.key,

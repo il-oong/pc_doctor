@@ -5,7 +5,7 @@ import sys
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from core import storage
+from core import actions, storage
 from core.checks.base import Severity
 from core.report import save_html
 from core.scheduler import Scanner, ScanProgress
@@ -115,7 +115,7 @@ class App(tk.Tk):
         self._main = tk.Frame(self, bg=theme.BG_CANVAS)
         self._main.pack(side="left", fill="both", expand=True)
 
-        self._dashboard = DashboardView(self._main)
+        self._dashboard = DashboardView(self._main, on_action=self._run_action)
         self._history = HistoryView(self._main)
         self._settings = SettingsView(self._main, on_apply=self._on_settings_apply)
 
@@ -232,6 +232,55 @@ class App(tk.Tk):
         opener = {"win32": "start", "darwin": "open"}.get(sys.platform, "xdg-open")
         subprocess.Popen([opener, str(path)], shell=(sys.platform == "win32"))
         self._footer_lbl.configure(text=f"리포트 저장: {path}")
+
+    def _run_action(
+        self,
+        action_key: str,
+        confirm_msg: str | None,
+        action_args: dict | None,
+        action_label: str,
+    ) -> None:
+        """Execute a remediation action triggered from the prescription panel."""
+        if confirm_msg:
+            ok = messagebox.askyesno(f"PC Doctor — {action_label}", confirm_msg)
+            if not ok:
+                return
+
+        self._footer_lbl.configure(
+            text=f"조치 실행 중: {action_label}…",
+            fg=theme.ACCENT_PRIMARY,
+        )
+        self.update_idletasks()
+
+        result = actions.run(action_key, action_args or {})
+
+        if result.ok:
+            messagebox.showinfo(
+                f"PC Doctor — {action_label}",
+                result.message or "완료되었습니다.",
+            )
+            self._footer_lbl.configure(
+                text=f"조치 완료: {action_label} — {result.message}",
+                fg=theme.TEXT_MUTED,
+            )
+        elif result.status == "skipped":
+            messagebox.showwarning(
+                f"PC Doctor — {action_label}",
+                result.message or "이 환경에서는 사용할 수 없습니다.",
+            )
+            self._footer_lbl.configure(
+                text=f"조치 건너뜀: {action_label}",
+                fg=theme.TEXT_MUTED,
+            )
+        else:
+            messagebox.showerror(
+                f"PC Doctor — {action_label}",
+                result.message or "조치 실행에 실패했습니다.",
+            )
+            self._footer_lbl.configure(
+                text=f"조치 실패: {action_label}",
+                fg=theme.TEXT_MUTED,
+            )
 
     def _on_settings_apply(self, interval_min: int, notify: bool) -> None:
         self._notify_enabled = notify

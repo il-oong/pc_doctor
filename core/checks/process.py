@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import psutil
 
-from .base import Check, CheckResult, Severity, linear_score, severity_from_score
+from .base import Check, CheckResult, Recommendation, Severity, linear_score, severity_from_score
 
 
 class ProcessCheck(Check):
@@ -56,13 +56,27 @@ class ProcessCheck(Check):
             score = min(score, 60)
         severity = severity_from_score(score)
 
-        recs: list[str] = []
+        recs: list[Recommendation] = []
         if heaviest_cpu >= 100:
-            recs.append(f"`{top_cpu[0]['name']}` 프로세스가 CPU를 많이 사용합니다.")
+            recs.append(Recommendation(
+                text=f"`{top_cpu[0]['name']}` 프로세스가 CPU를 많이 사용합니다.",
+                action="open_task_manager",
+                action_label="작업 관리자 열기",
+            ))
         if heaviest_mem >= 30:
-            recs.append(f"`{top_mem[0]['name']}` 프로세스가 메모리를 많이 사용합니다.")
+            recs.append(Recommendation(
+                text=f"`{top_mem[0]['name']}` 프로세스가 메모리를 많이 사용합니다.",
+                action="open_task_manager",
+                action_label="작업 관리자 열기",
+            ))
         if zombies > 5:
-            recs.append(f"좀비 프로세스가 {zombies}개 있습니다. 시스템 재시작을 고려해 주세요.")
+            recs.append(Recommendation(
+                text=f"좀비 프로세스가 {zombies}개 있습니다. 시스템 재시작을 고려해 주세요.",
+                action="restart_pc",
+                action_label="지금 재시작",
+                confirm="60초 후 PC를 재시작합니다. 진행할까요?",
+                action_args={"delay_sec": 60},
+            ))
 
         if top_cpu:
             summary = f"총 {len(procs)}개 · 최상위 {top_cpu[0]['name']} ({top_cpu[0]['cpu']:.0f}% CPU)"

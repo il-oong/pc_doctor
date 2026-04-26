@@ -5,7 +5,7 @@ import psutil
 
 from utils.format import bytes_human
 
-from .base import Check, CheckResult, linear_score, severity_from_score
+from .base import Check, CheckResult, Recommendation, linear_score, severity_from_score
 
 
 class MemoryCheck(Check):
@@ -24,13 +24,25 @@ class MemoryCheck(Check):
         score = int(round(ram_score * 0.8 + swap_score * 0.2))
         severity = severity_from_score(score)
 
-        recs: list[str] = []
+        recs: list[Recommendation] = []
         if vm.percent >= 90:
-            recs.append("메모리가 거의 가득 찼습니다. 사용하지 않는 앱을 종료해 주세요.")
+            recs.append(Recommendation(
+                text="메모리가 거의 가득 찼습니다. 사용하지 않는 앱을 종료해 주세요.",
+                action="open_task_manager",
+                action_label="작업 관리자 열기",
+            ))
         elif vm.percent >= 80:
-            recs.append("메모리 사용량이 많습니다. 브라우저 탭이나 백그라운드 앱을 정리해 주세요.")
+            recs.append(Recommendation(
+                text="메모리 사용량이 많습니다. 브라우저 탭이나 백그라운드 앱을 정리해 주세요.",
+                action="open_task_manager",
+                action_label="작업 관리자 열기",
+            ))
         if sw.total and sw.percent >= 50:
-            recs.append("스왑 사용량이 큽니다. 물리 메모리 증설 또는 앱 종료를 권장합니다.")
+            recs.append(Recommendation(
+                text="스왑 사용량이 큽니다. 물리 메모리 증설 또는 앱 종료를 권장합니다.",
+                action="open_task_manager",
+                action_label="작업 관리자 열기",
+            ))
 
         return CheckResult(
             key=self.key,

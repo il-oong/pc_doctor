@@ -24,6 +24,38 @@ class Severity(str, Enum):
 
 
 @dataclass
+class Recommendation:
+    """A single piece of advice with an optional one-click action.
+
+    `text`         — the human-readable advice.
+    `action`       — action key registered in `core.actions`. None = info only.
+    `action_label` — button label (defaults to a generic "조치 실행").
+    `confirm`      — confirmation prompt; if set, UI asks before running.
+    `action_args`  — extra args passed to the action handler.
+    """
+    text: str
+    action: str | None = None
+    action_label: str | None = None
+    confirm: str | None = None
+    action_args: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_value(cls, value: "Recommendation | str") -> "Recommendation":
+        if isinstance(value, Recommendation):
+            return value
+        return cls(text=str(value))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "action": self.action,
+            "action_label": self.action_label,
+            "confirm": self.confirm,
+            "action_args": dict(self.action_args),
+        }
+
+
+@dataclass
 class CheckResult:
     key: str
     title: str
@@ -31,7 +63,7 @@ class CheckResult:
     severity: Severity
     summary: str
     metrics: dict[str, Any] = field(default_factory=dict)
-    recommendations: list[str] = field(default_factory=list)
+    recommendations: list[Recommendation] = field(default_factory=list)
     duration_ms: int = 0
     icon: str = ""  # short emoji/character used as fallback icon
 
@@ -43,7 +75,7 @@ class CheckResult:
             "severity": self.severity.value,
             "summary": self.summary,
             "metrics": self.metrics,
-            "recommendations": list(self.recommendations),
+            "recommendations": [r.to_dict() for r in self.recommendations],
             "duration_ms": self.duration_ms,
             "icon": self.icon,
         }
@@ -107,4 +139,8 @@ class Check:
         result.duration_ms = int((time.perf_counter() - start) * 1000)
         if not result.icon:
             result.icon = self.icon
+        # Normalize: allow checks to return raw strings for backwards compat
+        result.recommendations = [
+            Recommendation.from_value(r) for r in result.recommendations
+        ]
         return result

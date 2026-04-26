@@ -45,7 +45,17 @@ def to_html(summary: HealthSummary) -> str:
             f"</tr>\n"
         )
         for rec in r.recommendations:
-            recs_html += f"<li><strong>{html.escape(r.title)}</strong>: {html.escape(rec)}</li>\n"
+            text = rec.text if hasattr(rec, "text") else str(rec)
+            label = getattr(rec, "action_label", None)
+            tag = (
+                f" <span style='font-size:11px;color:#2E7DD7;background:#E6F0FB;"
+                f"padding:2px 8px;border-radius:6px;margin-left:6px'>"
+                f"조치: {html.escape(label)}</span>"
+            ) if label else ""
+            recs_html += (
+                f"<li><strong>{html.escape(r.title)}</strong>: "
+                f"{html.escape(text)}{tag}</li>\n"
+            )
 
     if not recs_html:
         recs_html = "<li>모든 항목이 정상입니다. 권장 조치가 없습니다.</li>"

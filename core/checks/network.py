@@ -6,7 +6,7 @@ import time
 
 import psutil
 
-from .base import Check, CheckResult, Severity, linear_score, severity_from_score
+from .base import Check, CheckResult, Recommendation, Severity, linear_score, severity_from_score
 
 
 PROBE_HOSTS = [("1.1.1.1", 53), ("8.8.8.8", 53)]
@@ -59,8 +59,18 @@ class NetworkCheck(Check):
                 summary="인터넷에 연결할 수 없습니다.",
                 metrics={"reachable": False, "interfaces": if_stats},
                 recommendations=[
-                    "네트워크 케이블 또는 Wi-Fi 연결을 확인해 주세요.",
-                    "라우터 재시작 후 다시 시도해 주세요.",
+                    Recommendation(
+                        text="네트워크 설정을 열어 어댑터 상태를 확인합니다.",
+                        action="open_network_settings",
+                        action_label="네트워크 설정 열기",
+                    ),
+                    Recommendation(
+                        text="네트워크 어댑터를 재설정합니다 (release/renew).",
+                        action="reset_network_adapter",
+                        action_label="네트워크 재설정",
+                        confirm="네트워크 어댑터의 IP를 해제하고 다시 받습니다. 진행할까요?",
+                    ),
+                    Recommendation(text="라우터/모뎀을 재시작 후 다시 시도해 주세요."),
                 ],
                 icon=self.icon,
             )
@@ -71,11 +81,19 @@ class NetworkCheck(Check):
         score = int(round(rtt_score * 0.7 + dns_score * 0.3))
         severity = severity_from_score(score)
 
-        recs: list[str] = []
+        recs: list[Recommendation] = []
         if avg_rtt >= 200:
-            recs.append("응답 지연이 큽니다. 무선 신호 또는 회선 상태를 확인해 주세요.")
+            recs.append(Recommendation(
+                text="응답 지연이 큽니다. 무선 신호 또는 회선 상태를 확인해 주세요.",
+                action="open_network_settings",
+                action_label="네트워크 설정 열기",
+            ))
         if dns_ms is not None and dns_ms >= 400:
-            recs.append("DNS 응답이 느립니다. DNS 서버를 변경해 보세요.")
+            recs.append(Recommendation(
+                text="DNS 응답이 느립니다. DNS 캐시를 비워 보세요.",
+                action="flush_dns",
+                action_label="DNS 캐시 비우기",
+            ))
 
         return CheckResult(
             key=self.key,
