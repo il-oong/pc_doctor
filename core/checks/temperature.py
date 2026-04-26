@@ -22,39 +22,53 @@ def _capture(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, check=False,
         )
-        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
+        return proc.returncode, out, err
     except (FileNotFoundError, subprocess.SubprocessError, OSError):
         return -1, "", "command failed"
 
 
+def _powershell_json(script: str, timeout: int = 10) -> Any:
+    rc, out, _ = _capture(["powershell", "-NoProfile", "-Command", script], timeout=timeout)
+    if rc != 0 or not out:
+        return None
+    import json
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return None
+
+
+def _as_list(data: Any) -> list:
+    if data is None:
+        return []
+    if isinstance(data, list):
+        return data
+    return [data]
+
+
 def _windows_acpi_temps() -> list[dict[str, Any]]:
     """Read CPU temperature via ACPI thermal zones (units: tenths of Kelvin)."""
-    ps = (
+    data = _powershell_json(
         "Get-CimInstance -Namespace 'root/wmi' -ClassName MSAcpi_ThermalZoneTemperature"
         " -ErrorAction SilentlyContinue |"
         " Select-Object InstanceName, CurrentTemperature |"
-        " ConvertTo-Csv -NoTypeInformation"
+        " ConvertTo-Json -Compress"
     )
-    rc, out, _ = _capture(["powershell", "-NoProfile", "-Command", ps], timeout=10)
     sensors: list[dict[str, Any]] = []
-    if rc != 0 or not out:
-        return sensors
-    lines = [ln for ln in out.splitlines() if ln.strip()]
-    if len(lines) < 2:
-        return sensors
-    for line in lines[1:]:
-        parts = [p.strip().strip('"') for p in line.split(",")]
-        if len(parts) < 2:
+    for row in _as_list(data):
+        if not isinstance(row, dict):
             continue
         try:
-            raw = int(parts[1])
-        except ValueError:
+            raw = int(row.get("CurrentTemperature") or 0)
+        except (TypeError, ValueError):
             continue
         celsius = (raw / 10.0) - 273.15
-        if celsius < -50 or celsius > 200:  # garbage filter
+        if celsius < -50 or celsius > 200:
             continue
         sensors.append({
-            "label": parts[0] or "ACPI Thermal Zone",
+            "label": (row.get("InstanceName") or "ACPI Thermal Zone"),
             "current": round(celsius, 1),
             "high": None,
             "critical": None,
@@ -66,29 +80,23 @@ def _windows_lhm_temps() -> list[dict[str, Any]]:
     """Read temps from LibreHardwareMonitor / OpenHardwareMonitor if running."""
     sensors: list[dict[str, Any]] = []
     for ns in ("root/LibreHardwareMonitor", "root/OpenHardwareMonitor"):
-        ps = (
+        data = _powershell_json(
             f"Get-CimInstance -Namespace '{ns}' -ClassName Sensor"
             " -ErrorAction SilentlyContinue |"
             " Where-Object SensorType -eq 'Temperature' |"
             " Select-Object Name, Value |"
-            " ConvertTo-Csv -NoTypeInformation"
+            " ConvertTo-Json -Compress",
+            timeout=8,
         )
-        rc, out, _ = _capture(["powershell", "-NoProfile", "-Command", ps], timeout=8)
-        if rc != 0 or not out:
-            continue
-        lines = [ln for ln in out.splitlines() if ln.strip()]
-        if len(lines) < 2:
-            continue
-        for line in lines[1:]:
-            parts = [p.strip().strip('"') for p in line.split(",")]
-            if len(parts) < 2:
+        for row in _as_list(data):
+            if not isinstance(row, dict):
                 continue
             try:
-                value = float(parts[1])
-            except ValueError:
+                value = float(row.get("Value") or 0)
+            except (TypeError, ValueError):
                 continue
             sensors.append({
-                "label": parts[0] or "LHM",
+                "label": (row.get("Name") or "LHM"),
                 "current": round(value, 1),
                 "high": None,
                 "critical": None,

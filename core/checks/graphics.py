@@ -1,14 +1,16 @@
 """Graphics adapter & driver health check.
 
-On Windows the driver date/version is read via WMI (`Win32_VideoController`)
-and an old driver triggers a recommendation to update via Device Manager or
-the vendor's tool (NVIDIA / AMD / Intel).
+Sources:
+  - Windows: PowerShell `Get-CimInstance Win32_VideoController` → JSON
+  - macOS:   `system_profiler SPDisplaysDataType`
+  - Linux:   `lspci`
 
-On macOS / Linux the check is informational — drivers are managed by the OS
-package manager, so we just surface the GPU model.
+Empty / null fields and embedded commas are handled by parsing JSON instead
+of CSV. All field accesses go through helpers that coerce None → safe defaults.
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -25,55 +27,84 @@ def _capture(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, check=False,
         )
-        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
+        return proc.returncode, out, err
     except (FileNotFoundError, subprocess.SubprocessError, OSError):
         return -1, "", "command failed"
 
 
-def _parse_wmi_date(raw: str) -> datetime | None:
-    """WMI dates look like 20240115000000.000000+540 — keep first 14 digits."""
-    if not raw or not raw[:8].isdigit():
+def _safe_str(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _parse_wmi_date(raw: Any) -> datetime | None:
+    """WMI dates look like 20240115000000.000000+540 — keep first 14 digits.
+
+    Also handles `/Date(1717286400000)/` JSON form returned by some
+    PowerShell versions when serializing CIM datetime objects.
+    """
+    s = _safe_str(raw).strip()
+    if not s:
         return None
-    try:
-        return datetime.strptime(raw[:14], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
+
+    # /Date(epoch_ms)/
+    m = re.match(r"/Date\((-?\d+)\)/", s)
+    if m:
+        try:
+            return datetime.fromtimestamp(int(m.group(1)) / 1000.0, tz=timezone.utc)
+        except (ValueError, OSError):
+            return None
+
+    # WMI string form
+    if s[:8].isdigit():
+        try:
+            return datetime.strptime(s[:14], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
 
 
 def _windows_gpus() -> list[dict[str, Any]]:
     ps = (
         "Get-CimInstance Win32_VideoController |"
         " Select-Object Name, DriverVersion, DriverDate, AdapterRAM, Status, VideoProcessor |"
-        " ConvertTo-Csv -NoTypeInformation"
+        " ConvertTo-Json -Compress"
     )
     rc, out, _ = _capture(["powershell", "-NoProfile", "-Command", ps], timeout=15)
     gpus: list[dict[str, Any]] = []
     if rc != 0 or not out:
         return gpus
 
-    lines = [ln for ln in out.splitlines() if ln.strip()]
-    if len(lines) < 2:
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
         return gpus
-    header = [h.strip().strip('"') for h in lines[0].split(",")]
-    for line in lines[1:]:
-        # Crude CSV split — values shouldn't contain commas in our selected fields
-        parts = [p.strip().strip('"') for p in line.split(",")]
-        if len(parts) != len(header):
+
+    # Single object → wrap; multiple → already list
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return gpus
+
+    for row in data:
+        if not isinstance(row, dict):
             continue
-        row = dict(zip(header, parts))
-        date = _parse_wmi_date(row.get("DriverDate", ""))
+        date = _parse_wmi_date(row.get("DriverDate"))
         try:
             ram = int(row.get("AdapterRAM") or 0)
-        except ValueError:
+        except (TypeError, ValueError):
             ram = 0
         gpus.append({
-            "name": row.get("Name") or "Unknown GPU",
-            "driver_version": row.get("DriverVersion") or "",
+            "name": _safe_str(row.get("Name")) or "Unknown GPU",
+            "driver_version": _safe_str(row.get("DriverVersion")),
             "driver_date": date.isoformat() if date else None,
             "driver_age_days": (datetime.now(timezone.utc) - date).days if date else None,
             "adapter_ram": ram,
-            "status": row.get("Status") or "",
-            "processor": row.get("VideoProcessor") or "",
+            "status": _safe_str(row.get("Status")),
+            "processor": _safe_str(row.get("VideoProcessor")),
         })
     return gpus
 
@@ -86,7 +117,6 @@ def _linux_gpus() -> list[dict[str, Any]]:
             for line in out.splitlines():
                 low = line.lower()
                 if "vga" in low or "3d" in low or "display" in low:
-                    # Extract vendor/model with regex tolerance
                     m = re.findall(r'"([^"]+)"', line)
                     if len(m) >= 4:
                         gpus.append({
@@ -106,8 +136,6 @@ def _macos_gpus() -> list[dict[str, Any]]:
     current: dict[str, Any] | None = None
     for raw in out.splitlines():
         line = raw.strip()
-        if line.endswith(":") and "Chipset Model" not in line and current is None:
-            continue
         if line.startswith("Chipset Model:"):
             if current:
                 gpus.append(current)
@@ -123,7 +151,7 @@ def _macos_gpus() -> list[dict[str, Any]]:
 
 
 def _vendor_of(name: str) -> str:
-    n = name.lower()
+    n = (name or "").lower()
     if "nvidia" in n or "geforce" in n or "rtx" in n or "gtx" in n or "quadro" in n:
         return "nvidia"
     if "amd" in n or "radeon" in n or "ryzen" in n:
@@ -166,14 +194,13 @@ class GraphicsCheck(Check):
                 icon=self.icon,
             )
 
-        # ── Score & recommendations ──────────────────────────────────────────
         score = 100
         recs: list[Recommendation] = []
         problems: list[str] = []
 
         for g in gpus:
-            name = g.get("name", "GPU")
-            status = (g.get("status") or "").lower()
+            name = _safe_str(g.get("name")) or "GPU"
+            status = _safe_str(g.get("status")).lower()
             if status and status not in ("ok", ""):
                 score -= 30
                 problems.append(f"{name} 이상 ({status})")
@@ -203,14 +230,15 @@ class GraphicsCheck(Check):
             severity = Severity.CRITICAL
 
         first = gpus[0]
-        summary_parts = [first.get("name", "GPU")]
-        if first.get("driver_version"):
-            summary_parts.append(f"드라이버 {first['driver_version']}")
-        if first.get("driver_age_days") is not None:
-            summary_parts.append(f"{first['driver_age_days']}일 경과")
+        summary_parts = [_safe_str(first.get("name")) or "GPU"]
+        ver = _safe_str(first.get("driver_version"))
+        if ver:
+            summary_parts.append(f"드라이버 {ver}")
+        age = first.get("driver_age_days")
+        if isinstance(age, int):
+            summary_parts.append(f"{age}일 경과")
         summary = " · ".join(summary_parts)
 
-        # Always offer the manual paths as fallback actions
         if not recs:
             recs.append(Recommendation(
                 text="그래픽 드라이버를 최신 상태로 유지하면 안정성과 성능이 향상됩니다.",
