@@ -19,11 +19,14 @@ class PrescriptionPanel(tk.Frame):
     """Shows all active recommendations in a prescription-chart style."""
 
     def __init__(self, parent: tk.Widget, **kwargs: object) -> None:
-        super().__init__(parent, bg=BG_SURFACE, **kwargs)
+        from ui.theme import DIVIDER
+        super().__init__(parent, bg=BG_SURFACE,
+                         highlightbackground=DIVIDER, highlightthickness=1,
+                         **kwargs)
         self._build()
 
     def _build(self) -> None:
-        self.configure(padding=(16, 14))
+        self.configure(padx=16, pady=14)
         header = tk.Label(
             self, text="💊  처방전  (Prescription)",
             font=(FONT_FAMILY, 13, "bold"),

@@ -108,7 +108,6 @@ class DashboardView(ttk.Frame):
 
         self._prescription = PrescriptionPanel(p)
         self._prescription.pack(fill="x", padx=16, pady=(0, 16))
-        _card_border(self._prescription)
 
     # ── Public update methods ────────────────────────────────────────────────
 
