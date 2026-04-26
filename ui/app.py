@@ -13,6 +13,7 @@ from core.score import HealthSummary
 from ui import theme
 from ui.views.dashboard import DashboardView
 from ui.views.history import HistoryView
+from ui.views.maintenance import MaintenanceView
 from ui.views.settings import SettingsView
 from utils.format import time_only
 from utils.notify import notify
@@ -100,9 +101,10 @@ class App(tk.Tk):
         self._current_view = tk.StringVar(value="dashboard")
 
         nav_items = [
-            ("dashboard", "🏠  대시보드"),
-            ("history",   "📋  히스토리"),
-            ("settings",  "⚙  설정"),
+            ("dashboard",   "🏠  대시보드"),
+            ("maintenance", "🧹  정리/관리"),
+            ("history",     "📋  히스토리"),
+            ("settings",    "⚙  설정"),
         ]
         for key, label in nav_items:
             lbl = tk.Label(self._sidebar, text=label,
@@ -120,6 +122,7 @@ class App(tk.Tk):
         self._main.pack(side="left", fill="both", expand=True)
 
         self._dashboard = DashboardView(self._main, on_action=self._run_action)
+        self._maintenance = MaintenanceView(self._main, on_action=self._run_action)
         self._history = HistoryView(self._main)
         self._settings = SettingsView(self._main, on_apply=self._on_settings_apply)
 
@@ -148,11 +151,13 @@ class App(tk.Tk):
     # ── Navigation ────────────────────────────────────────────────────────────
 
     def _navigate(self, view: str) -> None:
-        for v in (self._dashboard, self._history, self._settings):
+        for v in (self._dashboard, self._maintenance, self._history, self._settings):
             v.pack_forget()
 
         if view == "dashboard":
             self._dashboard.pack(fill="both", expand=True)
+        elif view == "maintenance":
+            self._maintenance.pack(fill="both", expand=True)
         elif view == "history":
             self._history.pack(fill="both", expand=True)
             self._history.load()
