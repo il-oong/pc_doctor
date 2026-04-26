@@ -15,11 +15,11 @@ from ui.theme import (
 )
 
 
-class PrescriptionPanel(ttk.Frame):
+class PrescriptionPanel(tk.Frame):
     """Shows all active recommendations in a prescription-chart style."""
 
     def __init__(self, parent: tk.Widget, **kwargs: object) -> None:
-        super().__init__(parent, style="Surface.TFrame", **kwargs)
+        super().__init__(parent, bg=BG_SURFACE, **kwargs)
         self._build()
 
     def _build(self) -> None:
@@ -31,7 +31,7 @@ class PrescriptionPanel(ttk.Frame):
         )
         header.pack(fill="x", pady=(0, 10))
 
-        self._list_frame = ttk.Frame(self, style="Surface.TFrame")
+        self._list_frame = tk.Frame(self, bg=BG_SURFACE)
         self._list_frame.pack(fill="both", expand=True)
 
         self._empty = tk.Label(
@@ -62,7 +62,7 @@ class PrescriptionPanel(ttk.Frame):
             return
 
         for title, rec, severity in items:
-            row = ttk.Frame(self._list_frame, style="Surface.TFrame")
+            row = tk.Frame(self._list_frame, bg=BG_SURFACE)
             row.pack(fill="x", pady=3)
 
             color = severity_color(severity.value)
@@ -70,7 +70,7 @@ class PrescriptionPanel(ttk.Frame):
             # Left colored bar
             tk.Frame(row, bg=color, width=3).pack(side="left", fill="y", padx=(0, 10))
 
-            inner = ttk.Frame(row, style="Surface.TFrame")
+            inner = tk.Frame(row, bg=BG_SURFACE)
             inner.pack(side="left", fill="both", expand=True)
 
             tk.Label(

@@ -16,21 +16,23 @@ from ui.theme import (
 )
 
 
-class VitalCard(ttk.Frame):
+class VitalCard(tk.Frame):
     """Displays a single CheckResult as a white card with status badge."""
 
     def __init__(self, parent: tk.Widget, on_click=None, **kwargs: object) -> None:
-        super().__init__(parent, style="Surface.TFrame", **kwargs)
+        super().__init__(parent, bg=BG_SURFACE,
+                         highlightbackground=DIVIDER, highlightthickness=1,
+                         **kwargs)
         self._on_click = on_click
         self._build()
         if on_click:
             self._bind_click(self)
 
     def _build(self) -> None:
-        self.configure(padding=(16, 14))
+        self.configure(padx=16, pady=14)
 
         # Row 1: icon + title + badge
-        top = ttk.Frame(self, style="Surface.TFrame")
+        top = tk.Frame(self, bg=BG_SURFACE)
         top.pack(fill="x")
 
         self._icon_lbl = tk.Label(top, text="", font=(FONT_FAMILY, 18),

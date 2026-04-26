@@ -39,7 +39,7 @@ class DashboardView(ttk.Frame):
         scrollbar.pack(side="right", fill="y")
         self._canvas.pack(side="left", fill="both", expand=True)
 
-        self._inner = ttk.Frame(self._canvas, style="TFrame")
+        self._inner = tk.Frame(self._canvas, bg=BG_CANVAS)
         self._window_id = self._canvas.create_window((0, 0), window=self._inner, anchor="nw")
         self._inner.bind("<Configure>", self._on_inner_configure)
         self._canvas.bind("<Configure>", self._on_canvas_resize)
@@ -95,7 +95,7 @@ class DashboardView(ttk.Frame):
         )
         section_lbl.pack(fill="x", padx=20, pady=(8, 4))
 
-        self._grid = tk.Frame(p, bg=BG_CANVAS)
+        self._grid = tk.Frame(p, bg=BG_CANVAS, padx=4, pady=4)
         self._grid.pack(fill="x", padx=16, pady=(0, 8))
 
         # ── Prescription ─────────────────────────────────────────────────
