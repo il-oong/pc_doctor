@@ -281,6 +281,145 @@ def _clear_temp_files(args: dict) -> ActionResult:
     return ActionResult("ok", msg)
 
 
+@register("clear_browser_cache")
+def _clear_browser_cache(_: dict) -> ActionResult:
+    """Remove cache directories of common browsers.
+
+    Skips files that are locked (browser running) — the browser will
+    rebuild any in-use cache on next launch.
+    """
+    targets: list[Path] = []
+    home = Path.home()
+    if IS_WINDOWS:
+        local = Path(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")))
+        roaming = Path(os.environ.get("APPDATA", str(home / "AppData" / "Roaming")))
+        targets += [
+            local / "Google" / "Chrome" / "User Data" / "Default" / "Cache",
+            local / "Google" / "Chrome" / "User Data" / "Default" / "Code Cache",
+            local / "Microsoft" / "Edge" / "User Data" / "Default" / "Cache",
+            local / "Microsoft" / "Edge" / "User Data" / "Default" / "Code Cache",
+            local / "BraveSoftware" / "Brave-Browser" / "User Data" / "Default" / "Cache",
+            local / "Mozilla" / "Firefox" / "Profiles",  # special-cased below
+            roaming / "Mozilla" / "Firefox" / "Profiles",
+        ]
+    elif IS_MACOS:
+        targets += [
+            home / "Library" / "Caches" / "Google" / "Chrome" / "Default" / "Cache",
+            home / "Library" / "Caches" / "com.apple.Safari",
+            home / "Library" / "Caches" / "Firefox" / "Profiles",
+        ]
+    else:  # Linux
+        targets += [
+            home / ".cache" / "google-chrome" / "Default" / "Cache",
+            home / ".cache" / "chromium" / "Default" / "Cache",
+            home / ".cache" / "mozilla" / "firefox",
+        ]
+
+    removed_dirs = 0
+    freed = 0
+    skipped = 0
+
+    def _purge_dir(d: Path) -> None:
+        nonlocal removed_dirs, freed, skipped
+        if not d.exists():
+            return
+        for entry in d.iterdir():
+            try:
+                if entry.is_file() or entry.is_symlink():
+                    size = entry.stat().st_size if entry.is_file() else 0
+                    entry.unlink()
+                    freed += size
+                elif entry.is_dir():
+                    size = sum(p.stat().st_size for p in entry.rglob("*") if p.is_file())
+                    shutil.rmtree(entry, ignore_errors=True)
+                    freed += size
+                    removed_dirs += 1
+            except (PermissionError, OSError):
+                skipped += 1
+
+    for t in targets:
+        if not t.exists():
+            continue
+        if t.name == "Profiles":  # Firefox: clear `cache2` of each profile
+            try:
+                for prof in t.iterdir():
+                    if prof.is_dir():
+                        _purge_dir(prof / "cache2")
+            except OSError:
+                pass
+        else:
+            _purge_dir(t)
+
+    if freed == 0 and skipped == 0:
+        return ActionResult("ok", "정리할 브라우저 캐시가 없습니다.")
+    mb = freed / (1024 * 1024)
+    msg = f"브라우저 캐시 약 {mb:.1f} MB 정리"
+    if skipped:
+        msg += f" · 사용 중 {skipped}개 건너뜀 (브라우저 종료 후 재시도 권장)"
+    return ActionResult("ok", msg)
+
+
+@register("clear_windows_temp")
+def _clear_windows_temp(args: dict) -> ActionResult:
+    """Aggressive temp cleanup: %TEMP%, %WINDIR%\\Temp, prefetch (Win only)."""
+    older_than_days = int(args.get("older_than_days", 1))
+    cutoff = time.time() - older_than_days * 86400
+
+    temps: list[Path] = [Path(tempfile.gettempdir())]
+    if IS_WINDOWS:
+        windir = os.environ.get("WINDIR", r"C:\Windows")
+        temps.append(Path(windir) / "Temp")
+
+    removed = 0
+    freed = 0
+    skipped = 0
+    for tdir in temps:
+        if not tdir.exists():
+            continue
+        for entry in tdir.iterdir():
+            try:
+                stat = entry.stat()
+                if stat.st_mtime > cutoff:
+                    continue
+                if entry.is_file() or entry.is_symlink():
+                    size = stat.st_size if entry.is_file() else 0
+                    entry.unlink()
+                    removed += 1
+                    freed += size
+                elif entry.is_dir():
+                    size = sum(p.stat().st_size for p in entry.rglob("*") if p.is_file())
+                    shutil.rmtree(entry, ignore_errors=True)
+                    removed += 1
+                    freed += size
+            except (PermissionError, OSError):
+                skipped += 1
+                continue
+
+    mb = freed / (1024 * 1024)
+    msg = f"임시 파일 {removed}개 정리 · 약 {mb:.1f} MB 확보"
+    if skipped:
+        msg += f" · 사용 중 {skipped}개 건너뜀"
+    return ActionResult("ok", msg)
+
+
+@register("find_old_apps")
+def _find_old_apps(_: dict) -> ActionResult:
+    """Open Windows 'Apps & Features' (sortable by install date / size).
+
+    Native Settings already exposes the 'least used' / 'oldest install'
+    information per app — we just open it.
+    """
+    if IS_WINDOWS:
+        return _open_url("ms-settings:appsfeatures")
+    if IS_MACOS:
+        return _spawn(["open", "/Applications"])
+    if IS_LINUX:
+        for candidate in ("gnome-software", "plasma-discover"):
+            if shutil.which(candidate):
+                return _spawn([candidate])
+    return ActionResult("skipped", "이 OS에서는 자동으로 열 수 없습니다.")
+
+
 @register("open_recycle_bin")
 def _open_recycle_bin(_: dict) -> ActionResult:
     if IS_WINDOWS:
