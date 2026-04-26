@@ -52,10 +52,10 @@ class DashboardView(ttk.Frame):
     def _build_inner(self) -> None:
         p = self._inner
 
-        # ── Score header card ────────────────────────────────────────────
-        header = tk.Frame(p, bg=BG_SURFACE, bd=0)
+        # ── Score header card ────────────────────────────────────────────────
+        header = tk.Frame(p, bg=BG_SURFACE, bd=0,
+                          highlightbackground=DIVIDER, highlightthickness=1)
         header.pack(fill="x", padx=16, pady=(16, 8))
-        _card_border(header)
 
         gauge_frame = tk.Frame(header, bg=BG_SURFACE)
         gauge_frame.pack(side="left", padx=16, pady=16)
@@ -87,7 +87,7 @@ class DashboardView(ttk.Frame):
         )
         self._last_lbl.pack(fill="x", pady=(2, 0))
 
-        # ── Vital cards grid ─────────────────────────────────────────────
+        # ── Vital cards grid ───────────────────────────────────────────────────
         section_lbl = tk.Label(
             p, text="바이탈 사인",
             font=(FONT_FAMILY, 13, "bold"),
@@ -98,7 +98,7 @@ class DashboardView(ttk.Frame):
         self._grid = tk.Frame(p, bg=BG_CANVAS, padx=4, pady=4)
         self._grid.pack(fill="x", padx=16, pady=(0, 8))
 
-        # ── Prescription ─────────────────────────────────────────────────
+        # ── Prescription ────────────────────────────────────────────────────
         section_lbl2 = tk.Label(
             p, text="처방전",
             font=(FONT_FAMILY, 13, "bold"),
@@ -109,7 +109,7 @@ class DashboardView(ttk.Frame):
         self._prescription = PrescriptionPanel(p)
         self._prescription.pack(fill="x", padx=16, pady=(0, 16))
 
-    # ── Public update methods ────────────────────────────────────────────────
+    # ── Public update methods ──────────────────────────────────────────────────────
 
     def update_summary(self, summary: HealthSummary) -> None:
         from utils.format import time_only
@@ -135,7 +135,7 @@ class DashboardView(ttk.Frame):
     def set_headline(self, text: str) -> None:
         self._headline_lbl.configure(text=text)
 
-    # ── Scroll helpers ───────────────────────────────────────────────────────
+    # ── Scroll helpers ────────────────────────────────────────────────────────────
 
     def _on_inner_configure(self, _event: tk.Event) -> None:
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
@@ -150,7 +150,3 @@ class DashboardView(ttk.Frame):
             self._canvas.yview_scroll(1, "units")
         else:
             self._canvas.yview_scroll(int(-event.delta / 120), "units")
-
-
-def _card_border(widget: tk.Widget) -> None:
-    widget.configure(highlightbackground=DIVIDER, highlightthickness=1)

@@ -28,7 +28,7 @@ class PrescriptionPanel(tk.Frame):
     def _build(self) -> None:
         self.configure(padx=16, pady=14)
         header = tk.Label(
-            self, text="💊  처방전  (Prescription)",
+            self, text="\U0001f48a  처방전  (Prescription)",
             font=(FONT_FAMILY, 13, "bold"),
             bg=BG_SURFACE, fg=TEXT_PRIMARY, anchor="w",
         )
