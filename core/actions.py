@@ -758,3 +758,152 @@ def _restart_app(_: dict) -> ActionResult:
         return ActionResult("ok", "재시작 중…")
     except Exception as exc:  # noqa: BLE001
         return ActionResult("error", f"재시작 실패: {exc}")
+
+
+# ── Inventory-driven maintenance actions ────────────────────────────────────
+
+@register("uninstall_app")
+def _uninstall_app(args: dict) -> ActionResult:
+    """Run an installed program's uninstaller string.
+
+    Caller passes `uninstall_string` (and optional `quiet_uninstall_string`).
+    We prefer the quiet version if available. The uninstaller itself decides
+    whether to prompt the user; we just spawn it detached.
+    """
+    if not IS_WINDOWS:
+        return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
+    cmd = (args.get("quiet_uninstall_string") or args.get("uninstall_string") or "").strip()
+    name = (args.get("name") or "프로그램").strip()
+    if not cmd:
+        return ActionResult("error", "제거 명령어가 없습니다.")
+    try:
+        # Use cmd /c so registry uninstall strings with quotes/args work uniformly.
+        subprocess.Popen(f'cmd /c "{cmd}"', shell=True, close_fds=True)
+        return ActionResult("ok", f"`{name}` 제거 마법사를 실행했습니다.")
+    except OSError as exc:
+        return ActionResult("error", f"제거 실행 실패: {exc}")
+
+
+@register("disable_startup")
+def _disable_startup(args: dict) -> ActionResult:
+    """Remove a value from the registry Run key.
+
+    Args: reg_path (e.g. 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'),
+          name (the value name).
+    """
+    if not IS_WINDOWS:
+        return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
+    reg_path = (args.get("reg_path") or "").strip()
+    name = (args.get("name") or "").strip()
+    if not reg_path or not name:
+        return ActionResult("error", "레지스트리 경로 또는 이름이 비어 있습니다.")
+    # Escape single quotes in the name for PowerShell
+    safe_name = name.replace("'", "''")
+    safe_path = reg_path.replace("'", "''")
+    ps = f"Remove-ItemProperty -Path '{safe_path}' -Name '{safe_name}' -ErrorAction Stop"
+    rc, out, err = _run_and_capture(
+        ["powershell", "-NoProfile", "-NonInteractive",
+         "-ExecutionPolicy", "Bypass", "-Command", ps],
+        timeout=15,
+    )
+    if rc == 0:
+        return ActionResult("ok", f"`{name}` 시작 프로그램에서 제거됨")
+    if "Requested registry access is not allowed" in (err or "") or "denied" in (err or "").lower():
+        return ActionResult("error",
+            "권한이 부족합니다 (HKLM의 시작 프로그램은 관리자 필요). "
+            "빠른 도구 → 관리자 권한으로 재시작 후 다시 시도해 주세요.")
+    return ActionResult("error", err or out or "제거 실패")
+
+
+@register("uninstall_hotfix")
+def _uninstall_hotfix(args: dict) -> ActionResult:
+    """Uninstall a Windows update by KB id (admin required)."""
+    if not IS_WINDOWS:
+        return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
+    kb = (args.get("kb") or "").strip().upper()
+    if not kb.startswith("KB"):
+        return ActionResult("error", "KB ID 형식이 잘못되었습니다.")
+    kb_num = kb[2:]
+    # wusa /uninstall /kb:NNN /quiet /norestart
+    try:
+        subprocess.Popen(
+            ["wusa.exe", "/uninstall", f"/kb:{kb_num}", "/quiet", "/norestart"],
+            close_fds=True,
+        )
+        return ActionResult(
+            "ok",
+            f"{kb} 제거를 시작했습니다.\n"
+            "관리자 권한 + 일부 업데이트는 영구 (제거 불가) — UAC 거절/실패는 백그라운드에서 일어납니다."
+        )
+    except OSError as exc:
+        return ActionResult("error", f"wusa 실행 실패: {exc}")
+
+
+@register("show_in_explorer")
+def _show_in_explorer(args: dict) -> ActionResult:
+    """Open Windows Explorer with the file selected (or open folder)."""
+    p = (args.get("path") or "").strip()
+    if not p:
+        return ActionResult("error", "경로가 비어 있습니다.")
+    target = Path(p)
+    if not target.exists():
+        return ActionResult("error", f"경로를 찾을 수 없습니다: {p}")
+    if IS_WINDOWS:
+        if target.is_file():
+            return _spawn(["explorer.exe", "/select,", str(target)])
+        return _spawn(["explorer.exe", str(target)])
+    if IS_MACOS:
+        return _spawn(["open", "-R", str(target)] if target.is_file() else ["open", str(target)])
+    if IS_LINUX:
+        return _open_path(target.parent if target.is_file() else target)
+    return ActionResult("skipped", "지원하지 않는 OS")
+
+
+@register("delete_file")
+def _delete_file(args: dict) -> ActionResult:
+    """Delete a file (move to recycle bin if possible)."""
+    p = (args.get("path") or "").strip()
+    if not p:
+        return ActionResult("error", "경로가 비어 있습니다.")
+    target = Path(p)
+    if not target.exists():
+        return ActionResult("ok", "이미 삭제된 파일입니다.")
+    try:
+        # Try recycle bin first via Windows Shell on Windows
+        if IS_WINDOWS:
+            try:
+                import ctypes
+                from ctypes import wintypes
+                FO_DELETE = 0x0003
+                FOF_ALLOWUNDO = 0x0040
+                FOF_NOCONFIRMATION = 0x0010
+                FOF_SILENT = 0x0004
+
+                class SHFILEOPSTRUCT(ctypes.Structure):
+                    _fields_ = [
+                        ("hwnd", wintypes.HWND),
+                        ("wFunc", wintypes.UINT),
+                        ("pFrom", wintypes.LPCWSTR),
+                        ("pTo", wintypes.LPCWSTR),
+                        ("fFlags", ctypes.c_uint16),
+                        ("fAnyOperationsAborted", wintypes.BOOL),
+                        ("hNameMappings", ctypes.c_void_p),
+                        ("lpszProgressTitle", wintypes.LPCWSTR),
+                    ]
+
+                op = SHFILEOPSTRUCT()
+                op.wFunc = FO_DELETE
+                op.pFrom = str(target) + "\0\0"
+                op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT
+                rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+                if rc == 0:
+                    return ActionResult("ok", f"휴지통으로 보냄: {target.name}")
+                # Fall through to direct unlink on failure
+            except OSError:
+                pass
+        target.unlink()
+        return ActionResult("ok", f"삭제됨: {target.name}")
+    except PermissionError:
+        return ActionResult("error", "권한이 부족합니다.")
+    except OSError as exc:
+        return ActionResult("error", f"삭제 실패: {exc}")
