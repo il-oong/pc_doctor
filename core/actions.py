@@ -667,3 +667,82 @@ def _open_smart_report(args: dict) -> ActionResult:
     if rc == 0 and out:
         return ActionResult("ok", out)
     return ActionResult("error", err or "디스크 상태를 읽지 못했습니다.")
+
+
+# ── App self-update ─────────────────────────────────────────────────────────
+
+@register("check_for_updates")
+def _check_for_updates(_: dict) -> ActionResult:
+    """Run `git pull --ff-only` in the project root and report changes."""
+    if not shutil.which("git"):
+        return ActionResult("error", "git이 설치되어 있지 않습니다.")
+
+    project_root = Path(__file__).resolve().parent.parent
+    if not (project_root / ".git").exists():
+        return ActionResult(
+            "skipped",
+            "이 폴더는 git 저장소가 아닙니다 (ZIP으로 받은 경우).\n"
+            "자동 업데이트를 쓰려면 폴더를 지우고 git clone으로 다시 받으세요."
+        )
+
+    try:
+        rc_fetch, _, err_fetch = _run_and_capture(
+            ["git", "-C", str(project_root), "fetch", "origin"], timeout=30,
+        )
+        if rc_fetch != 0:
+            return ActionResult("error", f"fetch 실패: {err_fetch}")
+
+        rc_log, log_out, _ = _run_and_capture(
+            ["git", "-C", str(project_root), "log", "HEAD..origin/main", "--oneline"],
+            timeout=10,
+        )
+        new_commits = [ln for ln in (log_out.splitlines() if log_out else []) if ln.strip()]
+        if not new_commits:
+            return ActionResult("ok", "이미 최신 버전입니다.")
+
+        rc_pull, pull_out, err_pull = _run_and_capture(
+            ["git", "-C", str(project_root), "pull", "--ff-only", "origin", "main"],
+            timeout=30,
+        )
+        if rc_pull != 0:
+            return ActionResult(
+                "error",
+                f"업데이트 실패: {err_pull or pull_out}\n"
+                "로컬 변경 사항이 있을 수 있습니다 — cmd에서 확인해 주세요."
+            )
+
+        summary = "\n".join(f"• {c}" for c in new_commits[:10])
+        more = f"\n…외 {len(new_commits) - 10}건" if len(new_commits) > 10 else ""
+        return ActionResult(
+            "ok",
+            f"{len(new_commits)}건의 업데이트를 받았습니다:\n\n{summary}{more}\n\n"
+            "변경 사항은 PC Doctor를 재시작하면 적용됩니다."
+        )
+    except Exception as exc:  # noqa: BLE001
+        return ActionResult("error", f"업데이트 중 오류: {exc}")
+
+
+@register("restart_app")
+def _restart_app(_: dict) -> ActionResult:
+    """Relaunch the current PC Doctor process (no elevation)."""
+    try:
+        project_root = Path(__file__).resolve().parent.parent
+        main_py = project_root / "main.py"
+        if not main_py.exists():
+            return ActionResult("error", "main.py를 찾지 못했습니다.")
+
+        kwargs: dict[str, Any] = {"close_fds": True}
+        if IS_WINDOWS:
+            kwargs["creationflags"] = 0x00000010  # CREATE_NEW_CONSOLE
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen([sys.executable, str(main_py)], **kwargs)
+
+        import threading
+        def _exit_soon() -> None:
+            time.sleep(0.4)
+            os._exit(0)
+        threading.Thread(target=_exit_soon, daemon=True).start()
+        return ActionResult("ok", "재시작 중…")
+    except Exception as exc:  # noqa: BLE001
+        return ActionResult("error", f"재시작 실패: {exc}")

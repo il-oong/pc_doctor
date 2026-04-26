@@ -65,6 +65,10 @@ class App(tk.Tk):
                                      command=self._full_scan)
         self._scan_btn.pack(side="left", padx=4)
 
+        ttk.Button(btn_frame, text="⬇  업데이트",
+                    style="Ghost.TButton",
+                    command=self._check_updates).pack(side="left", padx=4)
+
         ttk.Button(btn_frame, text="리포트 저장",
                     style="Ghost.TButton",
                     command=self._save_report).pack(side="left", padx=4)
@@ -232,6 +236,41 @@ class App(tk.Tk):
         opener = {"win32": "start", "darwin": "open"}.get(sys.platform, "xdg-open")
         subprocess.Popen([opener, str(path)], shell=(sys.platform == "win32"))
         self._footer_lbl.configure(text=f"리포트 저장: {path}")
+
+    def _check_updates(self) -> None:
+        """Pull latest from GitHub and offer to restart if anything changed."""
+        self._footer_lbl.configure(
+            text="업데이트 확인 중…", fg=theme.ACCENT_PRIMARY,
+        )
+        self.update_idletasks()
+
+        result = actions.run("check_for_updates", {})
+
+        if result.status == "skipped":
+            messagebox.showwarning("PC Doctor — 업데이트", result.message)
+            self._footer_lbl.configure(text="업데이트 건너뜀", fg=theme.TEXT_MUTED)
+            return
+        if not result.ok:
+            messagebox.showerror("PC Doctor — 업데이트", result.message)
+            self._footer_lbl.configure(text="업데이트 실패", fg=theme.TEXT_MUTED)
+            return
+
+        if result.message.startswith("이미 최신"):
+            messagebox.showinfo("PC Doctor — 업데이트", result.message)
+            self._footer_lbl.configure(text="이미 최신 버전", fg=theme.TEXT_MUTED)
+            return
+
+        # 새 변경사항 있음 — 재시작 묻기
+        restart = messagebox.askyesno(
+            "PC Doctor — 업데이트 완료",
+            f"{result.message}\n\n지금 재시작할까요?",
+        )
+        self._footer_lbl.configure(
+            text="업데이트 완료 — 재시작하면 적용됩니다.",
+            fg=theme.TEXT_MUTED,
+        )
+        if restart:
+            actions.run("restart_app", {})
 
     def _run_action(
         self,
