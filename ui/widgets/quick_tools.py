@@ -46,6 +46,9 @@ _TOOLS = [
      "restart_as_admin", {},
      "PC Doctor를 관리자 권한으로 다시 시작합니다.\n"
      "(C:\\Windows\\Temp 같은 보호된 폴더 정리에 필요) 진행할까요?"),
+    ("🎮", "GPU 드라이버 다운로드",
+     "open_gpu_driver_page", {},
+     None),
 ]
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import psutil
 
+from core import process_baseline
+
 from .base import Check, CheckResult, Recommendation, Severity, linear_score, severity_from_score
 
 
@@ -75,11 +77,16 @@ class ProcessCheck(Check):
                 status = p.info.get("status")
                 if status == psutil.STATUS_ZOMBIE:
                     zombies += 1
+                try:
+                    exe = p.exe() or ""
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    exe = ""
                 # Normalize CPU% so 100% means "one full core" — comparable across machines
                 cpu_per_core = cpu / cpu_count
                 procs.append({
                     "pid": pid,
                     "name": name,
+                    "exe": exe,
                     "user": p.info.get("username") or "",
                     "cpu": cpu,
                     "cpu_per_core": cpu_per_core,
@@ -134,6 +141,42 @@ class ProcessCheck(Check):
                 action_label="지금 재시작",
                 confirm="60초 후 PC를 재시작합니다. 진행할까요?",
                 action_args={"delay_sec": 60},
+            ))
+
+        # ── First-time-seen process detection ────────────────────────────────
+        new_procs, first_run = process_baseline.diff(procs)
+        if first_run:
+            recs.append(Recommendation(
+                text=(
+                    "프로세스 baseline을 처음 기록했습니다. "
+                    "다음 검진부터는 새로 등장한 프로세스를 자동으로 알려드립니다."
+                ),
+            ))
+        for np in new_procs[:8]:  # cap to keep UI tidy
+            exe_short = np.get("exe") or "(경로 미확인)"
+            recs.append(Recommendation(
+                text=(
+                    f"⚠ 이전에 보지 못했던 프로세스: `{np['name']}` "
+                    f"(PID {np['pid']})\n경로: {exe_short}"
+                ),
+                action="kill_process",
+                action_label=f"`{np['name']}` 종료",
+                confirm=(
+                    f"`{np['name']}` (PID {np['pid']}) 를 종료합니다.\n"
+                    "정상 프로세스라면 '신뢰' 버튼을 누르세요. 진행할까요?"
+                ),
+                action_args={"pid": np["pid"], "name": np["name"]},
+            ))
+            recs.append(Recommendation(
+                text=f"`{np['name']}` 가 정상이라면 신뢰 목록에 추가해 다시 알리지 않기.",
+                action="trust_process",
+                action_label="신뢰 (다시 알리지 않음)",
+                action_args={"name": np["name"], "exe": np.get("exe", "")},
+            ))
+        if len(new_procs) > 8:
+            recs.append(Recommendation(
+                text=f"...외 {len(new_procs) - 8}개 새 프로세스 더 있음. "
+                     "'리포트 저장'으로 전체 목록을 확인하세요.",
             ))
 
         if top_cpu:

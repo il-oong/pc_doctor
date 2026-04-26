@@ -907,3 +907,151 @@ def _delete_file(args: dict) -> ActionResult:
         return ActionResult("error", "권한이 부족합니다.")
     except OSError as exc:
         return ActionResult("error", f"삭제 실패: {exc}")
+
+
+# ── Process baseline trust ──────────────────────────────────────────────────
+
+@register("trust_process")
+def _trust_process(args: dict) -> ActionResult:
+    """Add a process to the trusted baseline so it isn't flagged again."""
+    from core import process_baseline
+    name = (args.get("name") or "").strip()
+    exe = (args.get("exe") or "").strip()
+    if not name:
+        return ActionResult("error", "프로세스 이름이 비어 있습니다.")
+    process_baseline.trust(name, exe)
+    return ActionResult("ok", f"`{name}` 을(를) 신뢰 목록에 추가했습니다.")
+
+
+@register("reset_process_baseline")
+def _reset_process_baseline(_: dict) -> ActionResult:
+    from core import process_baseline
+    process_baseline.reset()
+    return ActionResult("ok", "프로세스 baseline 초기화 완료. 다음 검진은 처음 실행으로 처리됩니다.")
+
+
+# ── Autostart on Windows boot ────────────────────────────────────────────────
+
+_AUTOSTART_KEY_NAME = "PCDoctor"
+
+
+@register("enable_autostart")
+def _enable_autostart(_: dict) -> ActionResult:
+    """Register PC Doctor to start when the user logs in (Windows)."""
+    if not IS_WINDOWS:
+        return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
+    try:
+        import winreg
+        project_root = Path(__file__).resolve().parent.parent
+        main_py = project_root / "main.py"
+        if not main_py.exists():
+            return ActionResult("error", "main.py를 찾지 못했습니다.")
+        # pythonw 우선 (콘솔 창 없이) → 없으면 python
+        pyw = Path(sys.executable).with_name("pythonw.exe")
+        runner = str(pyw if pyw.exists() else sys.executable)
+        cmd = f'"{runner}" "{main_py}"'
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE,
+        )
+        winreg.SetValueEx(key, _AUTOSTART_KEY_NAME, 0, winreg.REG_SZ, cmd)
+        winreg.CloseKey(key)
+        return ActionResult("ok", "Windows 시작 시 자동 실행 등록 완료.")
+    except OSError as exc:
+        return ActionResult("error", f"등록 실패: {exc}")
+
+
+@register("disable_autostart")
+def _disable_autostart(_: dict) -> ActionResult:
+    if not IS_WINDOWS:
+        return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE,
+        )
+        try:
+            winreg.DeleteValue(key, _AUTOSTART_KEY_NAME)
+        except FileNotFoundError:
+            pass
+        winreg.CloseKey(key)
+        return ActionResult("ok", "자동 실행을 해제했습니다.")
+    except OSError as exc:
+        return ActionResult("error", f"해제 실패: {exc}")
+
+
+def autostart_enabled() -> bool:
+    """Helper for UI to render the toggle state."""
+    if not IS_WINDOWS:
+        return False
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_QUERY_VALUE,
+        )
+        try:
+            winreg.QueryValueEx(key, _AUTOSTART_KEY_NAME)
+            return True
+        except FileNotFoundError:
+            return False
+        finally:
+            winreg.CloseKey(key)
+    except OSError:
+        return False
+
+
+# ── GPU driver page (vendor-aware) ───────────────────────────────────────────
+
+_GPU_VENDOR_URLS = {
+    "nvidia": "https://www.nvidia.co.kr/Download/index.aspx?lang=kr",
+    "amd":    "https://www.amd.com/ko/support",
+    "intel":  "https://www.intel.co.kr/content/www/kr/ko/support/detect.html",
+}
+
+
+@register("open_gpu_driver_page")
+def _open_gpu_driver_page(_: dict) -> ActionResult:
+    """Detect installed GPU vendor and open the right driver download page."""
+    try:
+        from core.checks.graphics import _vendor_of, _windows_gpus, _linux_gpus, _macos_gpus
+    except ImportError:
+        return ActionResult("error", "graphics 모듈을 찾지 못했습니다.")
+
+    if IS_WINDOWS:
+        gpus = _windows_gpus()
+    elif IS_MACOS:
+        gpus = _macos_gpus()
+    elif IS_LINUX:
+        gpus = _linux_gpus()
+    else:
+        gpus = []
+
+    if not gpus:
+        # 폴백: 모든 벤더 페이지를 한꺼번에 열어버리진 않고, 통합 안내 페이지로
+        return _open_url("https://www.driverpack.io/ko")
+
+    vendors = []
+    for g in gpus:
+        v = _vendor_of(g.get("name", ""))
+        if v != "unknown" and v not in vendors:
+            vendors.append(v)
+
+    if not vendors:
+        return _open_url("https://www.driverpack.io/ko")
+
+    # 여러 벤더가 섞여 있으면 모두 새 창으로 열어준다 (외장+내장 같은 케이스)
+    opened = []
+    for v in vendors:
+        url = _GPU_VENDOR_URLS.get(v)
+        if url:
+            _open_url(url)
+            opened.append(v.upper())
+    return ActionResult(
+        "ok",
+        f"GPU 드라이버 페이지를 열었습니다: {', '.join(opened)}",
+    )
