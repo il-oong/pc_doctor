@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# pc_doctor runtime
+data/
+*.db
+*.db-journal
+reports/
+build/
+dist/
+*.spec
+.idea/
+.vscode/
