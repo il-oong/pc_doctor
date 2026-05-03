@@ -569,7 +569,7 @@ def _run_chkdsk(args: dict) -> ActionResult:
     )
     try:
         subprocess.Popen(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            ["powershell", "-NoProfile", "-Command", ps],
             close_fds=True,
         )
         return ActionResult("ok", f"{drive} 디스크 검사를 관리자 권한으로 시작합니다. UAC 창을 승인해 주세요.")
