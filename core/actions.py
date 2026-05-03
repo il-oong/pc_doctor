@@ -1107,9 +1107,9 @@ def _delete_file(args: dict) -> ActionResult:
                 op.pFrom = str(target) + "\0\0"
                 op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT
                 rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
-                if rc == 0:
+                if rc == 0 and not op.fAnyOperationsAborted:
                     return ActionResult("ok", f"휴지통으로 보냄: {target.name}")
-                # Fall through to direct unlink on failure
+                # rc==0이지만 취소된 경우 or 실패 → 직접 삭제로 fallthrough
             except OSError:
                 pass
         target.unlink()

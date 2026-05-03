@@ -135,6 +135,12 @@ class MaintenanceView(ttk.Frame):
         self._async(lambda: list_large_files(min_bytes=100 * 1024 * 1024, limit=50),
                     self._render_files)
 
+    def reload_files(self) -> None:
+        """대용량 파일 탭 강제 새로고침."""
+        self._loaded["files"] = False
+        self._tab_files.clear()
+        self._load_files()
+
     # ── Renderers ────────────────────────────────────────────────────────────
 
     def _render_apps(self, data) -> None:

@@ -344,6 +344,9 @@ class App(tk.Tk):
                 text=f"조치 완료: {action_label} — {result.message}",
                 fg=theme.TEXT_MUTED,
             )
+            # 파일 삭제 후 대용량 파일 목록 자동 새로고침
+            if action_key == "delete_file":
+                self._maintenance.reload_files()
         elif result.status == "skipped":
             messagebox.showwarning(
                 f"PC Doctor — {action_label}",
