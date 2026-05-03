@@ -561,32 +561,58 @@ def _open_optimize_drives(_: dict) -> ActionResult:
 
 @register("run_chkdsk")
 def _run_chkdsk(args: dict) -> ActionResult:
-    """Run chkdsk with UAC elevation via ShellExecuteW runas verb."""
+    """Run chkdsk online scan (/scan) — no drive lock needed.
+
+    /scan performs a non-disruptive online scan on Windows 8+.
+    For repairs that require exclusive access, we schedule via chkntfs.
+    """
     if not IS_WINDOWS:
         return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
-    drive = str(args.get("drive", "C:"))
+    drive = str(args.get("drive", "C:")).rstrip("\\").rstrip("/")
+    if not drive.endswith(":"):
+        drive = drive + ":"
     try:
         import ctypes
-        # ShellExecuteW with "runas" directly triggers UAC — no PowerShell middleman.
-        # /f: 오류 수정 (드라이브 사용 중이면 다음 부팅 시 예약됨)
-        # /r: 불량 섹터 복구 (/f 포함)
         ret = ctypes.windll.shell32.ShellExecuteW(
             None, "runas", "cmd.exe",
-            f'/k echo 디스크 검사 시작 중... && chkdsk {drive} /f /r && pause',
+            f"/k chkdsk {drive} /scan & pause",
             None, 1,
         )
         if ret > 32:
             return ActionResult(
                 "ok",
-                f"{drive} 디스크 검사 창이 열립니다.\n"
-                "UAC 승인 후 검사가 시작됩니다.\n"
-                "C: 드라이브는 사용 중이므로 '예'를 누르면 다음 재부팅 때 자동 검사됩니다.",
+                f"{drive} 온라인 디스크 검사를 시작합니다.\n"
+                "오류가 발견되면 '디스크 검사 예약' 버튼으로 다음 재부팅 시 자동 수리할 수 있습니다.",
             )
         if ret == 5:
             return ActionResult("error", "UAC 승인이 거부되었습니다.")
         return ActionResult("error", f"실행 실패 (코드 {ret})")
     except OSError as exc:
         return ActionResult("error", f"실행 실패: {exc}")
+
+
+@register("schedule_chkdsk")
+def _schedule_chkdsk(args: dict) -> ActionResult:
+    """chkntfs로 다음 부팅 시 chkdsk /f 예약."""
+    if not IS_WINDOWS:
+        return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
+    drive = str(args.get("drive", "C:")).rstrip("\\").rstrip("/")
+    if not drive.endswith(":"):
+        drive = drive + ":"
+    try:
+        import ctypes
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", "cmd.exe",
+            f"/k chkntfs /c {drive} & echo 다음 재부팅 시 {drive} 디스크 검사가 예약되었습니다. & pause",
+            None, 1,
+        )
+        if ret > 32:
+            return ActionResult("ok", f"다음 재부팅 시 {drive} 디스크 검사가 예약됩니다.")
+        if ret == 5:
+            return ActionResult("error", "UAC 승인이 거부되었습니다.")
+        return ActionResult("error", f"예약 실패 (코드 {ret})")
+    except OSError as exc:
+        return ActionResult("error", f"예약 실패: {exc}")
 
 
 # ── Network actions ──────────────────────────────────────────────────────────

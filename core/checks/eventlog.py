@@ -192,8 +192,14 @@ class EventLogCheck(Check):
                     "데이터 손실 위험 — 중요 파일을 백업하고 디스크 검사를 실행하세요."
                 ),
                 action="run_chkdsk",
-                action_label="디스크 오류 검사 (chkdsk)",
-                action_args={"drive": "C:", "fix": False},
+                action_label="온라인 디스크 검사",
+                action_args={"drive": "C:"},
+            ))
+            recs.append(Recommendation(
+                text="오류 수정이 필요하면 다음 재부팅 시 자동 검사를 예약하세요.",
+                action="schedule_chkdsk",
+                action_label="재부팅 시 검사 예약",
+                action_args={"drive": "C:"},
             ))
 
         # ── 드라이버 오류 ──────────────────────────────────────────────────

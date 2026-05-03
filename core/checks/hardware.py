@@ -232,9 +232,14 @@ class HardwareCheck(Check):
                     text=f"디스크 이상 신호: {', '.join(unhealthy)}. 즉시 백업 후 교체를 검토하세요.",
                 ),
                 Recommendation(
-                    text="디스크 검사(chkdsk)를 실행해 파일시스템 오류를 확인합니다.",
+                    text="온라인 디스크 검사(chkdsk /scan)로 파일시스템 오류를 확인합니다.",
                     action="run_chkdsk",
-                    action_label="디스크 검사 실행",
+                    action_label="디스크 검사",
+                ),
+                Recommendation(
+                    text="오류 수정이 필요하면 다음 재부팅 시 자동 검사를 예약하세요.",
+                    action="schedule_chkdsk",
+                    action_label="재부팅 시 검사 예약",
                 ),
                 Recommendation(
                     text="장치 관리자에서 드라이브 상세 상태를 확인합니다.",
