@@ -16,6 +16,9 @@ from typing import Any
 from utils.platform import IS_WINDOWS
 
 
+_NO_WINDOW = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
+
 def _ps_json(script: str, timeout: int = 30) -> Any:
     if not IS_WINDOWS:
         return None
@@ -24,6 +27,7 @@ def _ps_json(script: str, timeout: int = 30) -> Any:
             ["powershell", "-NoProfile", "-NonInteractive",
              "-ExecutionPolicy", "Bypass", "-Command", script],
             capture_output=True, text=True, timeout=timeout, check=False,
+            **_NO_WINDOW,
         )
         out = (proc.stdout or "").strip()
         if proc.returncode != 0 or not out:

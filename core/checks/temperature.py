@@ -17,10 +17,15 @@ from utils.platform import IS_WINDOWS
 from .base import Check, CheckResult, Recommendation, Severity, linear_score, severity_from_score
 
 
+import sys as _sys
+_NO_WINDOW = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
+
+
 def _capture(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, check=False,
+            **_NO_WINDOW,
         )
         out = (proc.stdout or "").strip()
         err = (proc.stderr or "").strip()

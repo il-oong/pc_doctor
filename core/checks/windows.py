@@ -13,11 +13,16 @@ from utils.platform import IS_WINDOWS
 from .base import Check, CheckResult, Recommendation, Severity
 
 
+import sys as _sys
+_NO_WINDOW = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
+
+
 def _powershell(script: str, timeout: int = 25) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True, text=True, timeout=timeout, check=False,
+            **_NO_WINDOW,
         )
         out = (proc.stdout or "").strip()
         err = (proc.stderr or "").strip()

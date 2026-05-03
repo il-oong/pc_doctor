@@ -73,9 +73,13 @@ def _spawn(cmd: list[str] | str, *, shell: bool = False) -> ActionResult:
         return ActionResult("error", f"실행 실패: {exc}")
 
 
+_NO_WINDOW = {"creationflags": 0x08000000} if IS_WINDOWS else {}
+
+
 def _run_and_capture(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
     proc = subprocess.run(
         cmd, capture_output=True, text=True, timeout=timeout, check=False,
+        **_NO_WINDOW,
     )
     out = (proc.stdout or "").strip()
     err = (proc.stderr or "").strip()
@@ -564,11 +568,20 @@ def _run_chkdsk(args: dict) -> ActionResult:
     try:
         import ctypes
         # ShellExecuteW with "runas" directly triggers UAC — no PowerShell middleman.
+        # /f: 오류 수정 (드라이브 사용 중이면 다음 부팅 시 예약됨)
+        # /r: 불량 섹터 복구 (/f 포함)
         ret = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", "cmd.exe", f"/k chkdsk {drive}", None, 1
+            None, "runas", "cmd.exe",
+            f'/k echo 디스크 검사 시작 중... && chkdsk {drive} /f /r && pause',
+            None, 1,
         )
         if ret > 32:
-            return ActionResult("ok", f"{drive} 디스크 검사 창이 열립니다. UAC 승인 후 검사가 시작됩니다.")
+            return ActionResult(
+                "ok",
+                f"{drive} 디스크 검사 창이 열립니다.\n"
+                "UAC 승인 후 검사가 시작됩니다.\n"
+                "C: 드라이브는 사용 중이므로 '예'를 누르면 다음 재부팅 때 자동 검사됩니다.",
+            )
         if ret == 5:
             return ActionResult("error", "UAC 승인이 거부되었습니다.")
         return ActionResult("error", f"실행 실패 (코드 {ret})")
