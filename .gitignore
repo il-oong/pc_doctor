@@ -13,5 +13,6 @@ reports/
 build/
 dist/
 *.spec
+!pc_doctor.spec
 .idea/
 .vscode/
