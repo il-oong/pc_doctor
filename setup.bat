@@ -5,39 +5,60 @@ setlocal
 set "REPO=%USERPROFILE%\pc_doctor"
 set "REPO_URL=https://github.com/il-oong/pc_doctor.git"
 
-REM ── python ──────────────────────────────────────────────────────────
+echo ========================================
+echo  PC Doctor Setup
+echo ========================================
+echo.
+
+REM -- python check
 where python >nul 2>nul
 if errorlevel 1 (
-    echo Python이 없습니다.
-    echo https://www.python.org/downloads/
-    echo 설치 시 "Add Python to PATH" 반드시 체크!
+    echo [ERROR] Python not found.
+    echo Install from: https://www.python.org/downloads/
+    echo Make sure to check "Add Python to PATH"!
     pause & exit /b 1
 )
+echo [OK] Python found.
 
-REM ── git ─────────────────────────────────────────────────────────────
+REM -- git check
 where git >nul 2>nul
 if errorlevel 1 (
-    echo Git이 없습니다. https://git-scm.com/download/win
+    echo [ERROR] Git not found.
+    echo Install from: https://git-scm.com/download/win
     pause & exit /b 1
 )
+echo [OK] Git found.
 
-REM ── 다운로드 ─────────────────────────────────────────────────────────
+REM -- clone or pull
 if not exist "%REPO%\main.py" (
-    echo 다운로드 중...
+    echo Downloading PC Doctor...
     git clone "%REPO_URL%" "%REPO%"
-    if errorlevel 1 ( echo 실패. & pause & exit /b 1 )
+    if errorlevel 1 (
+        echo [ERROR] Download failed.
+        pause & exit /b 1
+    )
+    echo [OK] Download complete.
 ) else (
-    git -C "%REPO%" pull --ff-only >nul 2>nul
+    echo Checking for updates...
+    git -C "%REPO%" pull --ff-only
 )
 
-REM ── psutil 설치 ───────────────────────────────────────────────────────
-python -c "import psutil" >nul 2>nul
-if errorlevel 1 python -m pip install psutil >nul
+REM -- install psutil
+echo Installing dependencies...
+python -m pip install psutil
+echo [OK] Dependencies ready.
 
-REM ── 바탕화면 바로가기 생성 ────────────────────────────────────────────
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$r='%REPO%'; $pw=Join-Path (Split-Path (Get-Command python).Source) 'pythonw.exe'; if(-not(Test-Path $pw)){$pw=(Get-Command python).Source}; $d=[Environment]::GetFolderPath('Desktop'); $ws=New-Object -ComObject WScript.Shell; $lnk=$ws.CreateShortcut($d+'\PC Doctor.lnk'); $lnk.TargetPath=$pw; $lnk.Arguments='\"'+$r+'\main.py\"'; $lnk.WorkingDirectory=$r; $lnk.Description='PC Doctor'; $lnk.Save(); Write-Host '바탕화면 바로가기 생성 완료'"
+REM -- create desktop shortcut
+echo Creating desktop shortcut...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$r='%REPO%'; $pw=Join-Path (Split-Path (Get-Command python).Source) 'pythonw.exe'; if(-not(Test-Path $pw)){$pw=(Get-Command python).Source}; $d=[Environment]::GetFolderPath('Desktop'); $ws=New-Object -ComObject WScript.Shell; $lnk=$ws.CreateShortcut($d+'\PC Doctor.lnk'); $lnk.TargetPath=$pw; $lnk.Arguments='"'+$r+'\main.py"'; $lnk.WorkingDirectory=$r; $lnk.Description='PC Doctor'; $lnk.Save(); Write-Host '[OK] Shortcut created: '+$d+'\PC Doctor.lnk'"
 
-REM ── 실행 ─────────────────────────────────────────────────────────────
 echo.
-echo 완료! 바탕화면의 'PC Doctor' 아이콘을 더블클릭하세요.
-start "" pythonw "%REPO%\main.py"
+echo ========================================
+echo  Done! Launch PC Doctor now? (y/n)
+echo ========================================
+set /p RUN="> "
+if /i "%RUN%"=="y" start "" pythonw "%REPO%\main.py"
+
+echo.
+echo Shortcut is on your Desktop: PC Doctor
+pause
