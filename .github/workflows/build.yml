@@ -1,0 +1,51 @@
+name: Build PC닥터.exe
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller psutil
+
+      - name: PyInstaller 빌드
+        run: |
+          python -m PyInstaller `
+            --onefile `
+            --windowed `
+            --name "PC닥터" `
+            --hidden-import psutil `
+            --hidden-import psutil._pswindows `
+            --hidden-import winreg `
+            --hidden-import sqlite3 `
+            --hidden-import tkinter `
+            --hidden-import tkinter.ttk `
+            --hidden-import tkinter.messagebox `
+            --collect-submodules core `
+            --collect-submodules ui `
+            --collect-submodules utils `
+            --noconfirm `
+            main.py
+
+      - name: 릴리스 업로드
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: PC닥터 최신 버전
+          files: dist/PC닥터.exe
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
