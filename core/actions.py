@@ -557,22 +557,21 @@ def _open_optimize_drives(_: dict) -> ActionResult:
 
 @register("run_chkdsk")
 def _run_chkdsk(args: dict) -> ActionResult:
-    """Run chkdsk with UAC elevation (admin required)."""
+    """Run chkdsk with UAC elevation via ShellExecuteW runas verb."""
     if not IS_WINDOWS:
         return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
     drive = str(args.get("drive", "C:"))
-    # PowerShell Start-Process -Verb RunAs triggers UAC so chkdsk gets admin.
-    ps = (
-        f"Start-Process cmd "
-        f"-ArgumentList '/k chkdsk {drive}' "
-        f"-Verb RunAs"
-    )
     try:
-        subprocess.Popen(
-            ["powershell", "-NoProfile", "-Command", ps],
-            close_fds=True,
+        import ctypes
+        # ShellExecuteW with "runas" directly triggers UAC — no PowerShell middleman.
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", "cmd.exe", f"/k chkdsk {drive}", None, 1
         )
-        return ActionResult("ok", f"{drive} 디스크 검사를 관리자 권한으로 시작합니다. UAC 창을 승인해 주세요.")
+        if ret > 32:
+            return ActionResult("ok", f"{drive} 디스크 검사 창이 열립니다. UAC 승인 후 검사가 시작됩니다.")
+        if ret == 5:
+            return ActionResult("error", "UAC 승인이 거부되었습니다.")
+        return ActionResult("error", f"실행 실패 (코드 {ret})")
     except OSError as exc:
         return ActionResult("error", f"실행 실패: {exc}")
 
