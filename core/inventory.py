@@ -136,118 +136,124 @@ $apps | ConvertTo-Json -Compress -Depth 3
 def list_startup_programs() -> list[dict[str, Any]]:
     """Return startup programs from registry Run keys and Startup folders.
 
-    Each entry: {name, command, location, scope, reg_path, approved_path,
-    is_enabled, is_folder}.
-    - is_enabled: False when StartupApproved key marks it disabled (Task Manager logic)
-    - is_folder: True for items found in the Startup shell folder (not registry)
-    - approved_path: companion registry path for enable/disable toggle
+    winreg 직접 사용 — PowerShell 없이 동작해 권한 오류를 방지한다.
     """
     if not IS_WINDOWS:
         return []
 
-    script = r"""
-$results = [System.Collections.ArrayList]@();
+    import winreg
 
-# Registry Run keys + their StartupApproved counterparts
-$runs = @(
-    @{
-        Path     = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-        Approved = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
-        Scope    = 'user'; Loc = 'HKCU\Run'
-    },
-    @{
-        Path     = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
-        Approved = ''
-        Scope    = 'user'; Loc = 'HKCU\RunOnce'
-    },
-    @{
-        Path     = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'
-        Approved = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
-        Scope    = 'machine'; Loc = 'HKLM\Run'
-    },
-    @{
-        Path     = 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'
-        Approved = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32'
-        Scope    = 'machine'; Loc = 'HKLM\Run (32)'
-    }
-);
+    # (hive, run_subkey, approved_subkey, scope, location_label)
+    _RUN_KEYS = [
+        (
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run",
+            "user", "HKCU\\Run",
+        ),
+        (
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\RunOnce",
+            "",
+            "user", "HKCU\\RunOnce",
+        ),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run",
+            "machine", "HKLM\\Run",
+        ),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32",
+            "machine", "HKLM\\Run (32)",
+        ),
+    ]
 
-foreach ($r in $runs) {
-    $key = Get-Item $r.Path -ErrorAction SilentlyContinue;
-    if (-not $key) { continue }
-
-    $approvedKey = $null;
-    if ($r.Approved) {
-        $approvedKey = Get-Item $r.Approved -ErrorAction SilentlyContinue
-    }
-
-    foreach ($valName in $key.GetValueNames()) {
-        $cmd = $key.GetValue($valName);
-        $enabled = $true;
-        if ($approvedKey) {
-            $raw = $approvedKey.GetValue($valName, $null);
-            # byte[0] == 3 means disabled, 2 means enabled
-            if ($raw -ne $null -and $raw.Length -gt 0 -and $raw[0] -eq 3) {
-                $enabled = $false
-            }
-        }
-        $results.Add([PSCustomObject]@{
-            Name         = $valName
-            Command      = [string]$cmd
-            Scope        = $r.Scope
-            Location     = $r.Loc
-            RegPath      = $r.Path
-            ApprovedPath = $r.Approved
-            IsEnabled    = $enabled
-            IsFolder     = $false
-        }) | Out-Null
-    }
-}
-
-# Startup shell folders
-$folders = @(
-    @{
-        Path  = [Environment]::GetFolderPath('Startup')
-        Scope = 'user'; Loc = '시작프로그램 폴더'
-    },
-    @{
-        Path  = [Environment]::GetFolderPath('CommonStartup')
-        Scope = 'machine'; Loc = '공용 시작프로그램 폴더'
-    }
-);
-foreach ($f in $folders) {
-    if (-not (Test-Path $f.Path)) { continue }
-    Get-ChildItem $f.Path -File -ErrorAction SilentlyContinue | ForEach-Object {
-        $results.Add([PSCustomObject]@{
-            Name         = $_.BaseName
-            Command      = $_.FullName
-            Scope        = $f.Scope
-            Location     = $f.Loc
-            RegPath      = ''
-            ApprovedPath = ''
-            IsEnabled    = $true
-            IsFolder     = $true
-        }) | Out-Null
-    }
-}
-
-$results | ConvertTo-Json -Compress -Depth 3
-"""
-    data = _ps_json(script, timeout=20)
     items: list[dict[str, Any]] = []
-    for row in _as_list(data):
-        if not isinstance(row, dict):
+
+    for hive, run_sub, approved_sub, scope, loc in _RUN_KEYS:
+        try:
+            run_key = winreg.OpenKey(hive, run_sub, 0, winreg.KEY_READ)
+        except OSError:
             continue
-        items.append({
-            "name": _safe_str(row.get("Name")),
-            "command": _safe_str(row.get("Command")),
-            "scope": _safe_str(row.get("Scope")),
-            "location": _safe_str(row.get("Location")),
-            "reg_path": _safe_str(row.get("RegPath")),
-            "approved_path": _safe_str(row.get("ApprovedPath")),
-            "is_enabled": bool(row.get("IsEnabled", True)),
-            "is_folder": bool(row.get("IsFolder", False)),
-        })
+
+        # Read approved/disabled state
+        approved_vals: dict[str, bytes] = {}
+        if approved_sub:
+            try:
+                appr_key = winreg.OpenKey(hive, approved_sub, 0, winreg.KEY_READ)
+                idx = 0
+                while True:
+                    try:
+                        vname, vdata, vtype = winreg.EnumValue(appr_key, idx)
+                        if isinstance(vdata, bytes):
+                            approved_vals[vname] = vdata
+                        idx += 1
+                    except OSError:
+                        break
+                winreg.CloseKey(appr_key)
+            except OSError:
+                pass
+
+        # Read Run values
+        idx = 0
+        while True:
+            try:
+                vname, vdata, _ = winreg.EnumValue(run_key, idx)
+                idx += 1
+            except OSError:
+                break
+
+            # byte[0] == 3 → disabled by Task Manager
+            is_enabled = True
+            raw = approved_vals.get(vname)
+            if raw and len(raw) > 0 and raw[0] == 3:
+                is_enabled = False
+
+            hive_name = "HKCU" if hive == winreg.HKEY_CURRENT_USER else "HKLM"
+            reg_path = f"{hive_name}\\{run_sub}"
+            appr_path = (f"{hive_name}\\{approved_sub}") if approved_sub else ""
+
+            items.append({
+                "name": str(vname),
+                "command": str(vdata) if vdata else "",
+                "scope": scope,
+                "location": loc,
+                "reg_path": reg_path,
+                "approved_path": appr_path,
+                "is_enabled": is_enabled,
+                "is_folder": False,
+            })
+
+        winreg.CloseKey(run_key)
+
+    # Startup shell folders
+    _startup_folders = [
+        (os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"), "user", "시작프로그램 폴더"),
+        (os.path.expandvars(r"%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs\Startup"), "machine", "공용 시작프로그램 폴더"),
+    ]
+    for folder_path, scope, loc in _startup_folders:
+        fp = Path(folder_path)
+        if not fp.exists():
+            continue
+        try:
+            for entry in fp.iterdir():
+                if entry.is_file():
+                    items.append({
+                        "name": entry.stem,
+                        "command": str(entry),
+                        "scope": scope,
+                        "location": loc,
+                        "reg_path": "",
+                        "approved_path": "",
+                        "is_enabled": True,
+                        "is_folder": True,
+                    })
+        except OSError:
+            continue
+
     return items
 
 
