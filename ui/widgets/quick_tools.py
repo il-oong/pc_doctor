@@ -49,6 +49,9 @@ _TOOLS = [
     ("🎮", "GPU 드라이버 다운로드",
      "open_gpu_driver_page", {},
      None),
+    ("🚀", "시작 프로그램 관리",
+     "open_startup_manager", {},
+     None),
 ]
 
 

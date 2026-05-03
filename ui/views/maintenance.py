@@ -216,17 +216,28 @@ class MaintenanceView(ttk.Frame):
             self._render_empty(c, "등록된 시작 프로그램이 없거나 권한이 부족합니다.")
             return
 
+        enabled_cnt  = sum(1 for i in data if i.get("is_enabled", True))
+        disabled_cnt = len(data) - enabled_cnt
+
         bar = tk.Frame(c.body, bg=BG_CANVAS)
         bar.pack(fill="x", padx=8, pady=(0, 6))
-        tk.Label(bar, text=f"총 {len(data)}개",
+        summary = f"총 {len(data)}개  (활성 {enabled_cnt} · 비활성 {disabled_cnt})"
+        tk.Label(bar, text=summary,
                  font=(FONT_FAMILY, 11), bg=BG_CANVAS, fg=TEXT_SECONDARY).pack(side="left")
         ttk.Button(bar, text="새로고침", style="Ghost.TButton",
-                   command=self._load_startup).pack(side="right")
+                   command=self._reload_startup).pack(side="right")
 
         for item in data:
             self._startup_row(c.body, item)
 
+    def _reload_startup(self) -> None:
+        self._loaded["startup"] = False
+        self._load_startup()
+
     def _startup_row(self, parent: tk.Widget, item: dict) -> None:
+        is_enabled = item.get("is_enabled", True)
+        is_folder  = item.get("is_folder", False)
+
         row = tk.Frame(parent, bg=BG_SURFACE,
                         highlightbackground=DIVIDER, highlightthickness=1)
         row.pack(fill="x", padx=8, pady=3)
@@ -235,8 +246,23 @@ class MaintenanceView(ttk.Frame):
 
         head = tk.Frame(inner, bg=BG_SURFACE)
         head.pack(fill="x")
-        tk.Label(head, text=item["name"], font=(FONT_FAMILY, 12, "bold"),
+
+        # Name + enabled/disabled badge
+        name_frame = tk.Frame(head, bg=BG_SURFACE)
+        name_frame.pack(side="left", fill="x", expand=True)
+        tk.Label(name_frame, text=item["name"], font=(FONT_FAMILY, 12, "bold"),
                  bg=BG_SURFACE, fg=TEXT_PRIMARY, anchor="w").pack(side="left")
+
+        if is_folder:
+            badge_text, badge_color = "📁 폴더", "#6B7280"
+        elif is_enabled:
+            badge_text, badge_color = "✅ 활성", "#2BB673"
+        else:
+            badge_text, badge_color = "⛔ 비활성", "#E5484D"
+
+        tk.Label(name_frame, text=f"  {badge_text}",
+                 font=(FONT_FAMILY, 10), bg=BG_SURFACE, fg=badge_color).pack(side="left")
+
         tk.Label(head,
                  text=f"{item['scope']} · {item['location']}",
                  font=(FONT_FAMILY, 10),
@@ -246,16 +272,46 @@ class MaintenanceView(ttk.Frame):
                  font=(FONT_FAMILY, 10), bg=BG_SURFACE, fg=TEXT_SECONDARY,
                  anchor="w", wraplength=720, justify="left").pack(fill="x", pady=(2, 0))
 
-        if self._on_action:
-            ttk.Button(inner, text="⛔  사용 안 함 (레지스트리에서 제거)",
-                       style="Ghost.TButton",
+        if not self._on_action:
+            return
+
+        btns = tk.Frame(inner, bg=BG_SURFACE)
+        btns.pack(anchor="e", pady=(6, 0))
+
+        if is_folder:
+            # Startup folder items: just offer to open the folder
+            from pathlib import Path
+            folder = str(Path(item.get("command", "")).parent)
+            ttk.Button(btns, text="📂  폴더 열기", style="Ghost.TButton",
+                       command=lambda f=folder: self._on_action(
+                           "show_in_explorer", None, {"path": f}, "폴더 열기"
+                       )).pack(side="left")
+        elif is_enabled:
+            ttk.Button(btns, text="⛔  비활성화", style="Ghost.TButton",
                        command=lambda i=item: self._on_action(
                            "disable_startup",
-                           f"`{i['name']}` 시작 프로그램을 제거합니다.\n"
-                           "(레지스트리 값이 삭제되며 다음 부팅부터 적용) 진행할까요?",
-                           {"reg_path": i.get("reg_path"), "name": i.get("name")},
-                           f"{i['name']} 시작 제거",
-                       )).pack(anchor="e", pady=(6, 0))
+                           f"`{i['name']}` 시작 프로그램을 비활성화합니다.\n"
+                           "(레지스트리에서 삭제하지 않고 비활성 플래그만 설정 — 언제든 재활성화 가능)\n"
+                           "다음 부팅부터 적용됩니다. 진행할까요?",
+                           {
+                               "reg_path":      i.get("reg_path", ""),
+                               "approved_path": i.get("approved_path", ""),
+                               "name":          i.get("name", ""),
+                           },
+                           f"{i['name']} 비활성화",
+                       )).pack(side="left")
+        else:
+            ttk.Button(btns, text="✅  활성화", style="Ghost.TButton",
+                       command=lambda i=item: self._on_action(
+                           "enable_startup",
+                           f"`{i['name']}` 시작 프로그램을 다시 활성화합니다.\n"
+                           "다음 부팅부터 자동 실행됩니다. 진행할까요?",
+                           {
+                               "approved_path": i.get("approved_path", ""),
+                               "name":          i.get("name", ""),
+                           },
+                           f"{i['name']} 활성화",
+                       )).pack(side="left")
 
     def _render_updates(self, data) -> None:
         c = self._tab_updates

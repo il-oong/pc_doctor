@@ -497,18 +497,25 @@ def _empty_recycle_bin(_: dict) -> ActionResult:
         # 실행 정책의 영향을 받지 않음.
         try:
             import ctypes
+            fn = ctypes.windll.shell32.SHEmptyRecycleBinW
+            fn.restype = ctypes.c_int  # 명시적 HRESULT 타입 지정
             SHERB_NOCONFIRMATION = 0x00000001
             SHERB_NOPROGRESSUI   = 0x00000002
             SHERB_NOSOUND        = 0x00000004
             flags = SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND
-            hr = ctypes.windll.shell32.SHEmptyRecycleBinW(None, None, flags)
-            # S_OK == 0, E_UNEXPECTED 일부 빌드에서 비어있을 때 0x8000FFFF 반환 → 정상 처리
+            hr = fn(None, None, flags)
+            # S_OK (0): 성공
+            # 0x8000FFFF / -2147418113: E_UNEXPECTED — 일부 빌드에서 이미 비어 있을 때
+            # 0x80070002 / -2147024894: ERROR_FILE_NOT_FOUND — 비어 있을 때
+            # 0x80070057 / -2147024809: E_INVALIDARG — 일부 구형 빌드
+            # S_FALSE (1): 비어 있거나 작업 없음
+            _ALREADY_EMPTY = {-2147418113, -2147024894, -2147024809, 1}
             if hr == 0:
                 return ActionResult("ok", "휴지통을 비웠습니다.")
-            if hr == -2147418113 or hr == 0x8000FFFF:  # bin already empty
+            if hr in _ALREADY_EMPTY or (hr & 0xFFFFFFFF) in {0x8000FFFF, 0x80070002, 0x80070057}:
                 return ActionResult("ok", "휴지통이 이미 비어 있습니다.")
             return ActionResult("error", f"휴지통 비우기 실패 (HRESULT 0x{hr & 0xFFFFFFFF:08X})")
-        except OSError as exc:
+        except Exception as exc:  # noqa: BLE001
             return ActionResult("error", f"휴지통 비우기 실패: {exc}")
     if IS_MACOS:
         rc, _, err = _run_and_capture(["osascript", "-e", 'tell application "Finder" to empty trash'])
@@ -526,6 +533,19 @@ def _empty_recycle_bin(_: dict) -> ActionResult:
         except OSError as exc:
             return ActionResult("error", f"실패: {exc}")
     return ActionResult("skipped", "지원하지 않는 OS")
+
+
+@register("open_startup_manager")
+def _open_startup_manager(_: dict) -> ActionResult:
+    """Open Task Manager directly to the Startup Apps tab (Windows 11/10)."""
+    if IS_WINDOWS:
+        # taskmgr /0 /startup opens the Startup tab on Windows 10/11
+        result = _spawn(["taskmgr", "/0", "/startup"])
+        if result.ok:
+            return ActionResult("ok", "작업 관리자 → 시작 프로그램 탭을 열었습니다.")
+        # Fallback: just open taskmgr
+        return _spawn(["taskmgr"])
+    return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
 
 
 @register("open_optimize_drives")
@@ -652,6 +672,20 @@ def _open_device_manager(_: dict) -> ActionResult:
     if IS_MACOS:
         return _spawn(["open", "/System/Library/CoreServices/Applications/System Information.app"])
     return ActionResult("skipped", "Windows/macOS에서만 사용 가능합니다.")
+
+
+@register("open_event_viewer")
+def _open_event_viewer(_: dict) -> ActionResult:
+    if IS_WINDOWS:
+        return _spawn(["eventvwr.msc"], shell=True)
+    return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
+
+
+@register("open_services")
+def _open_services(_: dict) -> ActionResult:
+    if IS_WINDOWS:
+        return _spawn(["services.msc"], shell=True)
+    return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
 
 
 @register("open_smart_report")
@@ -848,19 +882,49 @@ def _uninstall_app(args: dict) -> ActionResult:
 
 @register("disable_startup")
 def _disable_startup(args: dict) -> ActionResult:
-    """Remove a value from the registry Run key.
+    """Disable a startup program using the StartupApproved registry key (non-destructive).
 
-    Args: reg_path (e.g. 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'),
-          name (the value name).
+    If ApprovedPath is provided, writes a disabled byte-flag so the program
+    can be re-enabled later (same approach as Task Manager). Falls back to
+    removing the Run key value for RunOnce entries that have no ApprovedPath.
+
+    Args: reg_path, approved_path, name.
     """
     if not IS_WINDOWS:
         return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
-    reg_path = (args.get("reg_path") or "").strip()
-    name = (args.get("name") or "").strip()
-    if not reg_path or not name:
-        return ActionResult("error", "레지스트리 경로 또는 이름이 비어 있습니다.")
-    # Escape single quotes in the name for PowerShell
+    reg_path     = (args.get("reg_path") or "").strip()
+    approved_path = (args.get("approved_path") or "").strip()
+    name         = (args.get("name") or "").strip()
+    if not name:
+        return ActionResult("error", "프로그램 이름이 비어 있습니다.")
+
     safe_name = name.replace("'", "''")
+
+    # Preferred: write disabled flag to StartupApproved (recoverable)
+    if approved_path:
+        safe_ap = approved_path.replace("'", "''")
+        ps = (
+            f"$p='{safe_ap}';"
+            " $d=[byte[]](3,0,0,0,0,0,0,0,0,0,0,0);"
+            " if(-not(Test-Path $p)){New-Item -Path $p -Force|Out-Null};"
+            f" Set-ItemProperty -Path $p -Name '{safe_name}' -Value $d -Type Binary -ErrorAction Stop;"
+            " 'OK'"
+        )
+        rc, out, err = _run_and_capture(
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-Command", ps],
+            timeout=15,
+        )
+        if rc == 0 and "OK" in out:
+            return ActionResult("ok", f"`{name}` 비활성화됨 (다음 부팅부터 적용, 언제든 재활성화 가능)")
+        if "denied" in (err or "").lower() or "access" in (err or "").lower():
+            return ActionResult("error",
+                "권한이 부족합니다 (HKLM 항목은 관리자 필요). "
+                "빠른 도구 → 관리자 권한으로 재시작 후 다시 시도해 주세요.")
+
+    # Fallback: remove from Run key (RunOnce or no ApprovedPath)
+    if not reg_path:
+        return ActionResult("error", "레지스트리 경로가 비어 있습니다.")
     safe_path = reg_path.replace("'", "''")
     ps = f"Remove-ItemProperty -Path '{safe_path}' -Name '{safe_name}' -ErrorAction Stop"
     rc, out, err = _run_and_capture(
@@ -870,11 +934,46 @@ def _disable_startup(args: dict) -> ActionResult:
     )
     if rc == 0:
         return ActionResult("ok", f"`{name}` 시작 프로그램에서 제거됨")
-    if "Requested registry access is not allowed" in (err or "") or "denied" in (err or "").lower():
+    if "denied" in (err or "").lower() or "access" in (err or "").lower():
         return ActionResult("error",
             "권한이 부족합니다 (HKLM의 시작 프로그램은 관리자 필요). "
             "빠른 도구 → 관리자 권한으로 재시작 후 다시 시도해 주세요.")
     return ActionResult("error", err or out or "제거 실패")
+
+
+@register("enable_startup")
+def _enable_startup(args: dict) -> ActionResult:
+    """Re-enable a previously disabled startup program via StartupApproved key.
+
+    Args: approved_path, name.
+    """
+    if not IS_WINDOWS:
+        return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
+    approved_path = (args.get("approved_path") or "").strip()
+    name          = (args.get("name") or "").strip()
+    if not approved_path or not name:
+        return ActionResult("error", "StartupApproved 경로 또는 이름이 비어 있습니다.")
+    safe_ap   = approved_path.replace("'", "''")
+    safe_name = name.replace("'", "''")
+    ps = (
+        f"$p='{safe_ap}';"
+        " $d=[byte[]](2,0,0,0,0,0,0,0,0,0,0,0);"
+        " if(-not(Test-Path $p)){New-Item -Path $p -Force|Out-Null};"
+        f" Set-ItemProperty -Path $p -Name '{safe_name}' -Value $d -Type Binary -ErrorAction Stop;"
+        " 'OK'"
+    )
+    rc, out, err = _run_and_capture(
+        ["powershell", "-NoProfile", "-NonInteractive",
+         "-ExecutionPolicy", "Bypass", "-Command", ps],
+        timeout=15,
+    )
+    if rc == 0 and "OK" in out:
+        return ActionResult("ok", f"`{name}` 활성화됨 (다음 부팅부터 적용)")
+    if "denied" in (err or "").lower() or "access" in (err or "").lower():
+        return ActionResult("error",
+            "권한이 부족합니다 (HKLM 항목은 관리자 필요). "
+            "빠른 도구 → 관리자 권한으로 재시작 후 다시 시도해 주세요.")
+    return ActionResult("error", err or out or "활성화 실패")
 
 
 @register("uninstall_hotfix")
