@@ -559,31 +559,63 @@ def _open_optimize_drives(_: dict) -> ActionResult:
     return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
 
 
+def _write_temp_ps1(script: str) -> str:
+    """UTF-8 BOM PS1 임시 파일 생성 후 경로 반환."""
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".ps1", prefix="pcdoctor_")
+    with os.fdopen(fd, "w", encoding="utf-8-sig") as f:
+        f.write(script)
+    return path
+
+
+def _cleanup_later(path: str, delay: float = 15.0) -> None:
+    import threading
+    def _rm():
+        time.sleep(delay)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    threading.Thread(target=_rm, daemon=True).start()
+
+
+def _shell_execute_ps1(script_path: str) -> int:
+    import ctypes
+    return ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", "powershell.exe",
+        f"-NoExit -ExecutionPolicy Bypass -File \"{script_path}\"",
+        None, 1,
+    )
+
+
 @register("run_chkdsk")
 def _run_chkdsk(args: dict) -> ActionResult:
-    """Run chkdsk online scan (/scan) — no drive lock needed.
+    """Repair-Volume -Scan 으로 온라인 검사 (드라이브 잠금 불필요).
 
-    /scan performs a non-disruptive online scan on Windows 8+.
-    For repairs that require exclusive access, we schedule via chkntfs.
+    cmd.exe + chkdsk 조합은 한글 인수 인코딩 문제로 액세스 거부가 발생하므로
+    임시 PS1 파일 + ShellExecuteW runas 방식으로 우회한다.
     """
     if not IS_WINDOWS:
         return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
-    drive = str(args.get("drive", "C:")).rstrip("\\").rstrip("/")
-    if not drive.endswith(":"):
-        drive = drive + ":"
+    letter = str(args.get("drive", "C:")).strip().lstrip().upper()
+    letter = letter[0] if letter and letter[0].isalpha() else "C"
+    script = (
+        f"Write-Host 'PC Doctor: {letter}: 드라이브 온라인 검사 시작...' -ForegroundColor Cyan\n"
+        f"$r = Repair-Volume -DriveLetter {letter} -Scan\n"
+        f"if ($r -eq 'NoErrorsFound') {{\n"
+        f"    Write-Host '결과: 오류 없음' -ForegroundColor Green\n"
+        f"}} else {{\n"
+        f"    Write-Host \"결과: $r\" -ForegroundColor Yellow\n"
+        f"    Write-Host '오류가 감지됐습니다. 재부팅 시 검사 예약을 권장합니다.' -ForegroundColor Yellow\n"
+        f"}}\n"
+        f"Read-Host 'Enter 키를 누르면 닫힙니다'\n"
+    )
     try:
-        import ctypes
-        ret = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", "cmd.exe",
-            f"/k chkdsk {drive} /scan & pause",
-            None, 1,
-        )
+        path = _write_temp_ps1(script)
+        _cleanup_later(path)
+        ret = _shell_execute_ps1(path)
         if ret > 32:
-            return ActionResult(
-                "ok",
-                f"{drive} 온라인 디스크 검사를 시작합니다.\n"
-                "오류가 발견되면 '디스크 검사 예약' 버튼으로 다음 재부팅 시 자동 수리할 수 있습니다.",
-            )
+            return ActionResult("ok", f"{letter}: 드라이브 온라인 검사 창이 열립니다.")
         if ret == 5:
             return ActionResult("error", "UAC 승인이 거부되었습니다.")
         return ActionResult("error", f"실행 실패 (코드 {ret})")
@@ -593,21 +625,23 @@ def _run_chkdsk(args: dict) -> ActionResult:
 
 @register("schedule_chkdsk")
 def _schedule_chkdsk(args: dict) -> ActionResult:
-    """chkntfs로 다음 부팅 시 chkdsk /f 예약."""
+    """Repair-Volume -OfflineScanAndFix 로 다음 재부팅 시 디스크 수리 예약."""
     if not IS_WINDOWS:
         return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
-    drive = str(args.get("drive", "C:")).rstrip("\\").rstrip("/")
-    if not drive.endswith(":"):
-        drive = drive + ":"
+    letter = str(args.get("drive", "C:")).strip().upper()
+    letter = letter[0] if letter and letter[0].isalpha() else "C"
+    script = (
+        f"Write-Host 'PC Doctor: {letter}: 드라이브 검사를 다음 재부팅 시로 예약합니다...' -ForegroundColor Cyan\n"
+        f"Repair-Volume -DriveLetter {letter} -OfflineScanAndFix\n"
+        f"Write-Host '예약 완료. 재부팅 시 자동으로 디스크 검사가 실행됩니다.' -ForegroundColor Green\n"
+        f"Read-Host 'Enter 키를 누르면 닫힙니다'\n"
+    )
     try:
-        import ctypes
-        ret = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", "cmd.exe",
-            f"/k chkntfs /c {drive} & echo 다음 재부팅 시 {drive} 디스크 검사가 예약되었습니다. & pause",
-            None, 1,
-        )
+        path = _write_temp_ps1(script)
+        _cleanup_later(path)
+        ret = _shell_execute_ps1(path)
         if ret > 32:
-            return ActionResult("ok", f"다음 재부팅 시 {drive} 디스크 검사가 예약됩니다.")
+            return ActionResult("ok", f"{letter}: 드라이브 검사가 다음 재부팅 시로 예약됩니다.")
         if ret == 5:
             return ActionResult("error", "UAC 승인이 거부되었습니다.")
         return ActionResult("error", f"예약 실패 (코드 {ret})")
