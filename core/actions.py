@@ -557,12 +557,24 @@ def _open_optimize_drives(_: dict) -> ActionResult:
 
 @register("run_chkdsk")
 def _run_chkdsk(args: dict) -> ActionResult:
-    """Schedule chkdsk on the worst drive (read-only by default)."""
+    """Run chkdsk with UAC elevation (admin required)."""
     if not IS_WINDOWS:
         return ActionResult("skipped", "Windows에서만 사용 가능합니다.")
     drive = str(args.get("drive", "C:"))
-    # Read-only scan that doesn't require a reboot.
-    return _spawn(["cmd", "/c", "start", "cmd", "/k", f"chkdsk {drive}"])
+    # PowerShell Start-Process -Verb RunAs triggers UAC so chkdsk gets admin.
+    ps = (
+        f"Start-Process cmd "
+        f"-ArgumentList '/k chkdsk {drive}' "
+        f"-Verb RunAs"
+    )
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            close_fds=True,
+        )
+        return ActionResult("ok", f"{drive} 디스크 검사를 관리자 권한으로 시작합니다. UAC 창을 승인해 주세요.")
+    except OSError as exc:
+        return ActionResult("error", f"실행 실패: {exc}")
 
 
 # ── Network actions ──────────────────────────────────────────────────────────
