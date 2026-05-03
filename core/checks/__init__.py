@@ -5,6 +5,7 @@ from .base import Check, CheckResult, Recommendation, Severity
 from .battery import BatteryCheck
 from .cpu import CPUCheck
 from .disk import DiskCheck
+from .eventlog import EventLogCheck
 from .graphics import GraphicsCheck
 from .hardware import HardwareCheck
 from .memory import MemoryCheck
@@ -24,6 +25,7 @@ def all_checks() -> list[Check]:
         HardwareCheck(),
         GraphicsCheck(),
         WindowsCheck(),
+        EventLogCheck(),
         NetworkCheck(),
         BatteryCheck(),
         TemperatureCheck(),

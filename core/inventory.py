@@ -130,40 +130,106 @@ $apps | ConvertTo-Json -Compress -Depth 3
 # ── Startup programs ─────────────────────────────────────────────────────────
 
 def list_startup_programs() -> list[dict[str, Any]]:
-    """Return registry-based startup programs from HKCU & HKLM Run keys.
+    """Return startup programs from registry Run keys and Startup folders.
 
-    Each entry: {name, command, location, scope ('user'|'machine'),
-    enabled (best-effort)}.
+    Each entry: {name, command, location, scope, reg_path, approved_path,
+    is_enabled, is_folder}.
+    - is_enabled: False when StartupApproved key marks it disabled (Task Manager logic)
+    - is_folder: True for items found in the Startup shell folder (not registry)
+    - approved_path: companion registry path for enable/disable toggle
     """
     if not IS_WINDOWS:
         return []
 
     script = r"""
-$results = @();
+$results = [System.Collections.ArrayList]@();
+
+# Registry Run keys + their StartupApproved counterparts
 $runs = @(
-    @{Path='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'; Scope='user'; Loc='HKCU\\Run'},
-    @{Path='HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'; Scope='user'; Loc='HKCU\\RunOnce'},
-    @{Path='HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'; Scope='machine'; Loc='HKLM\\Run'},
-    @{Path='HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'; Scope='machine'; Loc='HKLM\\Run (32)'}
+    @{
+        Path     = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+        Approved = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
+        Scope    = 'user'; Loc = 'HKCU\Run'
+    },
+    @{
+        Path     = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
+        Approved = ''
+        Scope    = 'user'; Loc = 'HKCU\RunOnce'
+    },
+    @{
+        Path     = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'
+        Approved = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
+        Scope    = 'machine'; Loc = 'HKLM\Run'
+    },
+    @{
+        Path     = 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'
+        Approved = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32'
+        Scope    = 'machine'; Loc = 'HKLM\Run (32)'
+    }
 );
+
 foreach ($r in $runs) {
     $key = Get-Item $r.Path -ErrorAction SilentlyContinue;
-    if ($key) {
-        foreach ($valName in $key.GetValueNames()) {
-            $cmd = $key.GetValue($valName);
-            $results += [PSCustomObject]@{
-                Name     = $valName
-                Command  = $cmd
-                Scope    = $r.Scope
-                Location = $r.Loc
-                RegPath  = $r.Path
+    if (-not $key) { continue }
+
+    $approvedKey = $null;
+    if ($r.Approved) {
+        $approvedKey = Get-Item $r.Approved -ErrorAction SilentlyContinue
+    }
+
+    foreach ($valName in $key.GetValueNames()) {
+        $cmd = $key.GetValue($valName);
+        $enabled = $true;
+        if ($approvedKey) {
+            $raw = $approvedKey.GetValue($valName, $null);
+            # byte[0] == 3 means disabled, 2 means enabled
+            if ($raw -ne $null -and $raw.Length -gt 0 -and $raw[0] -eq 3) {
+                $enabled = $false
             }
         }
+        $results.Add([PSCustomObject]@{
+            Name         = $valName
+            Command      = [string]$cmd
+            Scope        = $r.Scope
+            Location     = $r.Loc
+            RegPath      = $r.Path
+            ApprovedPath = $r.Approved
+            IsEnabled    = $enabled
+            IsFolder     = $false
+        }) | Out-Null
     }
 }
+
+# Startup shell folders
+$folders = @(
+    @{
+        Path  = [Environment]::GetFolderPath('Startup')
+        Scope = 'user'; Loc = '시작프로그램 폴더'
+    },
+    @{
+        Path  = [Environment]::GetFolderPath('CommonStartup')
+        Scope = 'machine'; Loc = '공용 시작프로그램 폴더'
+    }
+);
+foreach ($f in $folders) {
+    if (-not (Test-Path $f.Path)) { continue }
+    Get-ChildItem $f.Path -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $results.Add([PSCustomObject]@{
+            Name         = $_.BaseName
+            Command      = $_.FullName
+            Scope        = $f.Scope
+            Location     = $f.Loc
+            RegPath      = ''
+            ApprovedPath = ''
+            IsEnabled    = $true
+            IsFolder     = $true
+        }) | Out-Null
+    }
+}
+
 $results | ConvertTo-Json -Compress -Depth 3
 """
-    data = _ps_json(script, timeout=15)
+    data = _ps_json(script, timeout=20)
     items: list[dict[str, Any]] = []
     for row in _as_list(data):
         if not isinstance(row, dict):
@@ -174,6 +240,9 @@ $results | ConvertTo-Json -Compress -Depth 3
             "scope": _safe_str(row.get("Scope")),
             "location": _safe_str(row.get("Location")),
             "reg_path": _safe_str(row.get("RegPath")),
+            "approved_path": _safe_str(row.get("ApprovedPath")),
+            "is_enabled": bool(row.get("IsEnabled", True)),
+            "is_folder": bool(row.get("IsFolder", False)),
         })
     return items
 
